@@ -185,7 +185,17 @@ class DeepFM(BaseEstimator, TransformerMixin):
             grads_and_vars = optimizer.compute_gradients(self.loss)
             avg_grads_and_vars = []
             self._grad_placeholders = []
+            i = 0
             for grad, var in grads_and_vars:
+                if i < 2 :
+                    grad_tf = grad.values
+                    grad_ph = tf.placeholder(grad_tf.dtype, grad_tf.shape)
+                    self._grad_placeholders.append(grad_ph)
+                    avg_grads_and_vars.append((grad, var))
+                    i = i + 1
+                    continue
+                grad_ph = tf.placeholder(grad.dtype, grad.shape)
+                self._grad_placeholders.append(grad_ph)
                 avg_grads_and_vars.append((grad, var))
             self._grad_op = [x[0] for x in grads_and_vars]
             self._train_op =optimizer.apply_gradients(avg_grads_and_vars)
@@ -274,6 +284,9 @@ class DeepFM(BaseEstimator, TransformerMixin):
             self._gradients.append(grads)
             if len(self._gradients) == self._average_gradients:
                 for i, placeholder in enumerate(self._grad_placeholders):
+                    if i < 2:
+                        feed_dict[placeholder] = np.stack([g[i].values for g in self._gradients], axis=0).mean(axis=0)
+                        continue
                     feed_dict[placeholder] = np.stack([g[i] for g in self._gradients], axis=0).mean(axis=0)
                 self.sess.run(self._train_op, feed_dict=feed_dict)
                 self._gradients = []
@@ -407,76 +420,4 @@ class DeepFM(BaseEstimator, TransformerMixin):
         y_pred = self.predict(Xi, Xv)
         return self.eval_metric(y, y_pred)
 
-    '''
-    def load_model(self, weights_path, epoch):
-        if epoch == 0:
-            self._init_graph()  # 初始化网络结构，并根据参数确定损失函数和对应优化器
-            self.saver.save(self.sess, weights_path)
-        else:
-            self.saver.restore(self.sess, tf.train.latest_checkpoint(weights_path))
-        return
 
-    def compute_gradient_on_batch(self, session, Xi, Xv, y):
-        feed_dict = {self.feat_index: Xi,
-                     self.feat_value: Xv,
-                     self.label: y,
-                     self.dropout_keep_fm: self.dropout_fm,
-                     self.dropout_keep_deep: self.dropout_deep,
-                     self.train_phase: True}
-        if self._average_gradients == 1:
-            loss, _ = session.run([self._loss_op, self._train_op], feed_dict=feed_dict)
-        else:
-            loss, grads = session.run([self._loss_op, self._grad_op], feed_dict=feed_dict)
-            self._gradients.append(grads)
-            if len(self._gradients) == self._average_gradients:
-                for i, placeholder in enumerate(self._grad_placeholders):
-                    feed_dict[placeholder] = np.stack([g[i] for g in self._gradients], axis=0).mean(axis=0)
-                session.run(self._train_op, feed_dict=feed_dict)
-                self._gradients = []
-        return loss
-        return
-
-    def updata_model(self):
-        feed_dict = {self.dropout_keep_fm: self.dropout_fm,
-                     self.dropout_keep_deep: self.dropout_deep,
-                     self.train_phase: True}
-        for i, placeholder in enumerate(self._grad_placeholders):
-            feed_dict[placeholder] = np.stack([g[i] for g in self._gradients], axis=0).mean(axis=0)
-        self.sess.run(self._train_op, feed_dict=feed_dict)
-        self._gradients = []
-        return
-
-'''
-
-
-'''         # loss
-            if self.loss_type == "logloss":
-                self.out = tf.nn.sigmoid(self.out)
-                self.loss = tf.losses.log_loss(self.label, self.out)
-            elif self.loss_type == "mse":
-                self.loss = tf.nn.l2_loss(tf.subtract(self.label, self.out))
-            # l2 regularization on weights
-            if self.l2_reg > 0:
-                self.loss += tf.contrib.layers.l2_regularizer(
-                    self.l2_reg)(self.weights["concat_projection"])
-                if self.use_deep:
-                    for i in range(len(self.deep_layers)):
-                        self.loss += tf.contrib.layers.l2_regularizer(
-                            self.l2_reg)(self.weights["layer_%d"%i])
-
-            # optimizer
-            if self.optimizer_type == "adam":
-                self.optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate, beta1=0.9, beta2=0.999,
-                                                        epsilon=1e-8).minimize(self.loss)
-            elif self.optimizer_type == "adagrad":
-                self.optimizer = tf.train.AdagradOptimizer(learning_rate=self.learning_rate,
-                                                           initial_accumulator_value=1e-8).minimize(self.loss)
-            elif self.optimizer_type == "gd":
-                self.optimizer = tf.train.GradientDescentOptimizer(learning_rate=self.learning_rate).minimize(self.loss)
-            elif self.optimizer_type == "momentum":
-                self.optimizer = tf.train.MomentumOptimizer(learning_rate=self.learning_rate, momentum=0.95).minimize(
-                    self.loss)
-            elif self.optimizer_type == "yellowfin":
-                self.optimizer = YFOptimizer(learning_rate=self.learning_rate, momentum=0.0).minimize(
-                    self.loss)
-'''
