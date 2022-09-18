@@ -11,11 +11,14 @@ import tensorflow as tf
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.metrics import roc_auc_score
 from time import time
+from tensorflow.python.ops import gradients
 
 from tensorflow.contrib.layers.python.layers import batch_norm as batch_norm
 from yellowfin import YFOptimizer
 
-class DeepFM(BaseEstimator, TransformerMixin):
+gradients_avg = []
+
+class DeepFM2(BaseEstimator, TransformerMixin):
     def __init__(self, feature_size, field_size,
                  embedding_size=8, dropout_fm=[1.0, 1.0],
                  deep_layers=[32, 32], dropout_deep=[0.5, 0.5, 0.5],
@@ -57,7 +60,6 @@ class DeepFM(BaseEstimator, TransformerMixin):
         self.eval_metric = eval_metric
         self.greater_is_better = greater_is_better
         self.train_result, self.valid_result = [], []
-
         self._init_graph()
 
     def _init_graph(self):
@@ -150,12 +152,13 @@ class DeepFM(BaseEstimator, TransformerMixin):
 
         self._average_gradients = average_gradients
 
+        # loss
         if self.loss_type == "logloss":
             self.out = tf.nn.sigmoid(self.out)
             self.loss = tf.losses.log_loss(self.label, self.out)
         elif self.loss_type == "mse":
             self.loss = tf.nn.l2_loss(tf.subtract(self.label, self.out))
-            # l2 regularization on weights
+        # l2 regularization on weights
         if self.l2_reg > 0:
             self.loss += tf.contrib.layers.l2_regularizer(
                 self.l2_reg)(self.weights["concat_projection"])
@@ -180,30 +183,30 @@ class DeepFM(BaseEstimator, TransformerMixin):
 
         if average_gradients == 1:
             # This 'train_op' computes gradients and applies them in one step.
-            self._train_op = optimizer.minimize(self.loss)
+            grads_and_vars = optimizer.compute_gradients(self.loss)
+            self.train_op = optimizer.apply_gradients(grads_and_vars)
         else:
             grads_and_vars = optimizer.compute_gradients(self.loss)
             avg_grads_and_vars = []
-            self._grad_placeholders = []
+            self.grad_placeholders = []
             i = 0
             for grad, var in grads_and_vars:
-                if i < 2 :
+                if i < 2:
                     grad_tf = grad.values
                     grad_ph = tf.placeholder(grad_tf.dtype, grad_tf.shape)
-                    self._grad_placeholders.append(grad_ph)
+                    self.grad_placeholders.append(grad_ph)
                     avg_grads_and_vars.append((grad, var))
                     i = i + 1
                     continue
                 grad_ph = tf.placeholder(grad.dtype, grad.shape)
-                self._grad_placeholders.append(grad_ph)
+                self.grad_placeholders.append(grad_ph)
                 avg_grads_and_vars.append((grad, var))
-            self._grad_op = [x[0] for x in grads_and_vars]
-            self._train_op =optimizer.apply_gradients(avg_grads_and_vars)
-            self._gradients = []  # list to store gradients
+            self.grad_op = [x[0] for x in grads_and_vars]
+            self.train_op = optimizer.apply_gradients(avg_grads_and_vars)
+            self.gradients = []  # list to store gradients
 
     def _initialize_weights(self):
         weights = dict()
-
         # embeddings
         weights["feature_embeddings"] = tf.Variable(
             tf.random_normal([self.feature_size, self.embedding_size], 0.0, 0.01),
@@ -269,8 +272,7 @@ class DeepFM(BaseEstimator, TransformerMixin):
         np.random.set_state(rng_state)
         np.random.shuffle(c)
 
-
-    def fit_on_batch(self, Xi, Xv, y):
+    def fit_on_batch1(self, Xi, Xv, y):
         feed_dict = {self.feat_index: Xi,
                      self.feat_value: Xv,
                      self.label: y,
@@ -278,20 +280,111 @@ class DeepFM(BaseEstimator, TransformerMixin):
                      self.dropout_keep_deep: self.dropout_deep,
                      self.train_phase: True}
         if self._average_gradients == 1:
-            loss, _ = self.sess.run([self.loss, self._train_op], feed_dict=feed_dict)
+            loss, _ = self.sess.run([self.loss, self.train_op], feed_dict=feed_dict)
         else:
-            loss, grads = self.sess.run([self.loss, self._grad_op], feed_dict=feed_dict)
-            self._gradients.append(grads)
-            if len(self._gradients) == self._average_gradients:
-                for i, placeholder in enumerate(self._grad_placeholders):
+            loss, grads = self.sess.run([self.loss, self.grad_op], feed_dict=feed_dict)
+            self.gradients.append(grads)
+            if len(self.gradients) == self._average_gradients:
+                for i, placeholder in enumerate(self.grad_placeholders):
                     if i < 2:
-                        feed_dict[placeholder] = np.stack([g[i].values for g in self._gradients], axis=0).mean(axis=0)
+                        feed_dict[placeholder] = np.stack([g[i].values for g in self.gradients], axis=0).mean(axis=0)
                         continue
-                    feed_dict[placeholder] = np.stack([g[i] for g in self._gradients], axis=0).mean(axis=0)
-                self.sess.run(self._train_op, feed_dict=feed_dict)
+                    feed_dict[placeholder] = np.stack([g[i] for g in self.gradients], axis=0).mean(axis=0)
+                self.sess.run(self.train_op, feed_dict=feed_dict)
                 self._gradients = []
+        return
+
+    def fit_on_batch(self, Xi, Xv, y):
+
+        feed_dict = {self.feat_index: Xi,
+                     self.feat_value: Xv,
+                     self.label: y,
+                     self.dropout_keep_fm: self.dropout_fm,
+                     self.dropout_keep_deep: self.dropout_deep,
+                     self.train_phase: True}
+
+        if self._average_gradients == 1:
+            loss, _ = self.sess.run([self.loss, self.train_op], feed_dict=feed_dict)
+        else:
+            loss, grads = self.sess.run([self.loss, self.grad_op], feed_dict=feed_dict)
+            global gradients_avg
+            gradients_avg.append(grads)
         return loss
 
+    def fit_with_grads(self, Xi, Xv, y, clear_grads):
+        feed_dict = {self.feat_index: Xi,
+                     self.feat_value: Xv,
+                     self.label: y,
+                     self.dropout_keep_fm: self.dropout_fm,
+                     self.dropout_keep_deep: self.dropout_deep,
+                     self.train_phase: True}
+        global gradients_avg
+        for i, placeholder in enumerate(self.grad_placeholders):
+            if i < 2:
+                feed_dict[placeholder] = np.stack([g[i].values for g in gradients_avg], axis=0).mean(axis=0)
+                continue
+            feed_dict[placeholder] = np.stack([g[i] for g in gradients_avg], axis=0).mean(axis=0)
+        self.sess.run(self.train_op, feed_dict=feed_dict)
+        if clear_grads :
+            gradients_avg = []
+
+    def fit_evaluate(self, Xi_train, Xv_train, y_train,
+            Xi_valid=None, Xv_valid=None, y_valid=None, epoch = None,
+            early_stopping=False, refit=False):
+        """
+        :param Xi_train: [[ind1_1, ind1_2, ...], [ind2_1, ind2_2, ...], ..., [indi_1, indi_2, ..., indi_j, ...], ...]
+                         indi_j is the feature index of feature field j of sample i in the training set
+        :param Xv_train: [[val1_1, val1_2, ...], [val2_1, val2_2, ...], ..., [vali_1, vali_2, ..., vali_j, ...], ...]
+                         vali_j is the feature value of feature field j of sample i in the training set
+                         vali_j can be either binary (1/0, for binary/categorical features) or float (e.g., 10.24, for numerical features)
+        :param y_train: label of each sample in the training set
+        :param Xi_valid: list of list of feature indices of each sample in the validation set
+        :param Xv_valid: list of list of feature values of each sample in the validation set
+        :param y_valid: label of each sample in the validation set
+        :param early_stopping: perform early stopping or not
+        :param refit: refit the model on the train+valid dataset or not
+        :return: None
+        """
+        has_valid = Xv_valid is not None
+
+        t1 = time()
+        train_result = self.evaluate(Xi_train, Xv_train, y_train)
+        self.train_result.append(train_result)
+        if has_valid:
+            valid_result = self.evaluate(Xi_valid, Xv_valid, y_valid)
+            self.valid_result.append(valid_result)
+        if self.verbose > 0 and epoch % self.verbose == 0:
+            if has_valid:
+                print("[%d] train-result=%.4f, valid-result=%.4f [%.1f s]"
+                    % (epoch + 1, train_result, valid_result, time() - t1))
+            else:
+                print("[%d] train-result=%.4f [%.1f s]"
+                    % (epoch + 1, train_result, time() - t1))
+
+        # fit a few more epoch on train+valid until result reaches the best_train_score
+        if has_valid and refit:
+            if self.greater_is_better:
+                best_valid_score = max(self.valid_result)
+            else:
+                best_valid_score = min(self.valid_result)
+            best_epoch = self.valid_result.index(best_valid_score)
+            best_train_score = self.train_result[best_epoch]
+            Xi_train = Xi_train + Xi_valid
+            Xv_train = Xv_train + Xv_valid
+            y_train = y_train + y_valid
+            for epoch in range(100):
+                self.shuffle_in_unison_scary(Xi_train, Xv_train, y_train)
+                total_batch = int(len(y_train) / self.batch_size)
+                for i in range(total_batch):
+                    Xi_batch, Xv_batch, y_batch = self.get_batch(Xi_train, Xv_train, y_train,
+                                                                self.batch_size, i)
+                    self.fit_on_batch1(Xi_batch, Xv_batch, y_batch)
+                # check
+                train_result = self.evaluate(Xi_train, Xv_train, y_train)
+                if abs(train_result - best_train_score) < 0.001 or \
+                    (self.greater_is_better and train_result > best_train_score) or \
+                    ((not self.greater_is_better) and train_result < best_train_score):
+                    break
 
     def fit(self, Xi_train, Xv_train, y_train,
             Xi_valid=None, Xv_valid=None, y_valid=None,
@@ -419,5 +512,3 @@ class DeepFM(BaseEstimator, TransformerMixin):
         """
         y_pred = self.predict(Xi, Xv)
         return self.eval_metric(y, y_pred)
-
-
