@@ -118,7 +118,7 @@ def serialize_state_with_1d_weights(image_count, model_weights):
     merge_state = np.concatenate((merge_state, model_weights))
     merge_state = np.float32(merge_state)
     return merge_state.tostring()
-
+# weights_with_grads
 def serialize_state_with_1d_weights_grads(image_count, model_weights, grads):
     """
     This function is called when the weights are to be passed to the keras fit
