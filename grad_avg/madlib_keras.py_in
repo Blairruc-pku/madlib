@@ -1823,7 +1823,7 @@ def fit_transition_batch_level(state, samples_every, dependent_var, independent_
     X = [np.array(x_train_tmp[i, :]) for i in range(x_train_tmp.shape[0])]
     record("X : {}".format(X))
     record("seg {} train model at {}\n".format(current_seg_id, time.time()))
-    # compute model grads
+    #  compute model grads
     grads = get_weight_grad(segment_model, X, y_train[0][:,0].reshape(-1, 1))
     # Aggregating number of images, loss and accuracy
     record("seg {} finish train model at {}\n".format(current_seg_id, time.time()))
