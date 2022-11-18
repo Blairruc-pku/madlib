@@ -130,9 +130,12 @@ def serialize_nd_weights(model_weights):
         keras.get_weights()
     :return: Model weights serialized into a bytestring format
     """
+    import pickle
     if model_weights is None:
         return None
     import time
+    with open('/data2/ruike/pg/deepfm_{}.pkl'.format(time.time()), 'wb') as f:
+        pickle.dump(model_weights, file=f)
     time_b0 = time.time()
     record("start serialize_nd_weights at {}\n".format(time_b0 ))
     time1 = time.time()
