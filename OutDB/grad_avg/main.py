@@ -1,6 +1,6 @@
 import os
 import sys
-
+import pdb
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -13,9 +13,9 @@ from metrics import gini_norm
 from DataReader import FeatureDictionary, DataParser
 
 sys.path.append("..")
-from DeepFM import DeepFM
-from DeepFM1 import DeepFM1
-from DeepFM2 import DeepFM2
+#from DeepFM import DeepFM
+#from DeepFM1 import DeepFM1
+from DeepFM import DeepFM2
 
 gini_scorer = make_scorer(gini_norm, greater_is_better=True, needs_proba=True)
 gradients_avg = []
@@ -29,6 +29,7 @@ def fit_with_grads(model, Xi, Xv, y, clear_grads):
                  model.dropout_keep_deep: model.dropout_deep,
                  model.train_phase: True}
     global gradients_avg
+    pdb.set_trace()
     for i, placeholder in enumerate(model.grad_placeholders):
         if i < 2:
             feed_dict[placeholder] = np.stack([g[i].values for g in gradients_avg], axis=0).mean(axis=0)
@@ -114,7 +115,6 @@ def _run_base_model_dfm(dfTrain, dfTest, folds, dfm_params, times):
     grad_count = 0
     for t in range(dfm_params["epoch"]):
         for i in range(total_batch):
-
             # compute gradients
             Xi1_batch, Xv1_batch, y1_batch = dfm1.get_batch(Xi1_train_, Xv1_train_, y1_train_, dfm_params["batch_size"], i)
             if len(y1_batch) != 1024 :
@@ -242,6 +242,7 @@ dfm_params = {
     "random_seed": config.RANDOM_SEED,
     "average_gradients": 3
 }
+
 y_train_dfm, y_test_dfm = _run_base_model_dfm(dfTrain, dfTest, folds, dfm_params, 0)
 '''epoch = dfm_params["epoch"]
 gini_train_res = np.zeros((5, epoch), dtype=float)

@@ -1,4 +1,4 @@
-
+from sklearn.metrics import  accuracy_score
 import numpy as np
 
 def gini(actual, pred):
@@ -13,3 +13,7 @@ def gini(actual, pred):
 
 def gini_norm(actual, pred):
     return gini(actual, pred) / gini(actual, actual)
+
+def accuracy(actual, pred):
+    pred_label = np.greater(pred, 0.5).astype(int)
+    return accuracy_score(actual, pred_label)

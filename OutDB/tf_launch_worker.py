@@ -7,7 +7,7 @@ import json
 from sklearn import metrics
 from tqdm import tqdm
 
-
+is_sync = True
 def pop_env():
     for k in ['https_proxy', 'http_proxy']:
         if k in os.environ:
@@ -45,29 +45,41 @@ def train_criteo(model, cluster, task_id, nrank, args):
     with tf.device(worker_device):
         dense_input = tf.compat.v1.placeholder(tf.float32, [batch_size, 13])
         sparse_input = tf.compat.v1.placeholder(tf.int32, [batch_size, 26])
-        y_ = y_ = tf.compat.v1.placeholder(tf.float32, [batch_size, 1])
+        y_ = tf.compat.v1.placeholder(tf.float32, [batch_size, 1])
 
-    with tf.device(tf.compat.v1.train.replica_device_setter(cluster=cluster)):
+    with tf.device(tf.compat.v1.train.replica_device_setter(cluster=cluster)): #Return a device function to use when building a Graph for replicas.
         server_num = len(cluster.as_dict()['ps'])
         embed_partitioner = tf.fixed_size_partitioner(
             server_num, 0) if server_num > 1 else None
         loss, y, opt = model(dense_input, sparse_input, y_,
                              embed_partitioner, param_on_gpu=False)
-        train_op = opt.minimize(loss)
+        if is_sync:
+            opt = tf.train.SyncReplicasOptimizer(opt, replicas_to_aggregate=len(cluster.as_dict()['worker']),
+                                                       total_num_replicas=len(cluster.as_dict()['worker']))
+            sync_replicas_hook = opt.make_session_run_hook(task_id == 0, num_tokens=0)
+            #hooks.append(opt.make_session_run_hook((task_id==0)))
+            hooks = [sync_replicas_hook]
+
+        global_step = tf.train.get_or_create_global_step()
+
+        train_op = opt.minimize(loss, global_step=global_step,)
+        if task_id==0:
+            train_op = tf.no_op()
 
     server = tf.train.Server(
         cluster, job_name="worker", task_index=task_id)
-    init = tf.compat.v1.global_variables_initializer()
+    '''init = tf.compat.v1.global_variables_initializer()
     sv = tf.train.Supervisor(
         is_chief=(task_id == 0),
         init_op=init,
-        recovery_wait_secs=1)
+        recovery_wait_secs=1)'''
     sess_config = tf.compat.v1.ConfigProto(
         allow_soft_placement=True,
         log_device_placement=False,
         device_filters=["/job:ps",
                         "/job:worker/task:%d" % task_id])
-    sess = sv.prepare_or_wait_for_session(server.target, config=sess_config)
+    #sess = sv.prepare_or_wait_for_session(server.target, config=sess_config)
+    sess = tf.train.MonitoredTrainingSession(master=server.target, is_chief=(task_id==0), hooks=hooks,config=sess_config)
     # sess.run(init)
     if task_id == 0:
         writer = tf.compat.v1.summary.FileWriter('logs/board', sess.graph)
@@ -77,8 +89,8 @@ def train_criteo(model, cluster, task_id, nrank, args):
         sparse_input: np.empty(shape=(batch_size, 26)),
         y_: np.empty(shape=(batch_size, 1)),
     }
-
-    if args.all:
+    print("Wait1")
+    while args.all and (not sess.should_stop()):
         raw_log_file = './logs/tf_dist_%s_%d.log' % (args.model, task_id)
         print('Processing all data, log to', raw_log_file)
         log_file = open(raw_log_file, 'w')
@@ -86,55 +98,60 @@ def train_criteo(model, cluster, task_id, nrank, args):
         total_epoch = 21
         start_index = 0
         for ep in range(total_epoch):
-            print("epoch %d" % ep)
-            st_time = time.time()
-            train_loss, train_acc, train_auc = [], [], []
-            for it in range(iterations // 10 + (ep % 10 == 9) * (iterations % 10)):
-                my_feed_dict[dense_input][:] = dense_feature[start_index: start_index + batch_size]
-                my_feed_dict[sparse_input][:] = sparse_feature[start_index: start_index + batch_size]
-                my_feed_dict[y_][:] = labels[start_index: start_index+batch_size]
-                start_index += batch_size
-                if start_index + batch_size > dense_feature.shape[0]:
-                    start_index = 0
-                loss_val = sess.run([loss, y, y_, train_op],
+            print("Wait2")
+            if not sess.should_stop():
+                print("epoch %d" % ep)
+                st_time = time.time()
+                train_loss, train_acc, train_auc = [], [], []
+                for it in range(iterations // 10 + (ep % 10 == 9) * (iterations % 10)):
+                    if not sess.should_stop():
+                        my_feed_dict[dense_input][:] = dense_feature[start_index: start_index + batch_size]
+                        my_feed_dict[sparse_input][:] = sparse_feature[start_index: start_index + batch_size]
+                        my_feed_dict[y_][:] = labels[start_index: start_index+batch_size]
+                        start_index += batch_size
+                        if start_index + batch_size > dense_feature.shape[0]:
+                            start_index = 0
+                        print("Epoch:{}, Iteration:{}: finish read data".format(ep, it))
+                        loss_val = sess.run([loss, y, y_, train_op],
                                     feed_dict=my_feed_dict)
-                pred_val = loss_val[1]
-                true_val = loss_val[2]
-                acc_val = np.equal(
-                    true_val,
-                    pred_val > 0.5)
-                train_loss.append(loss_val[0])
-                train_acc.append(acc_val)
-                train_auc.append(metrics.roc_auc_score(true_val, pred_val))
-            tra_accuracy = np.mean(train_acc)
-            tra_loss = np.mean(train_loss)
-            tra_auc = np.mean(train_auc)
-            en_time = time.time()
-            train_time = en_time - st_time
-
-            if args.val:
-                val_loss, val_acc, val_auc = [], [], []
-                for it in range(val_dense.shape[0] // batch_size):
-                    local_st = it * batch_size
-                    my_feed_dict[dense_input][:] = val_dense[local_st: local_st + batch_size]
-                    my_feed_dict[sparse_input][:] = val_sparse[local_st: local_st + batch_size]
-                    my_feed_dict[y_][:] = val_labels[local_st: local_st+batch_size]
-                    loss_val = sess.run([loss, y, y_], feed_dict=my_feed_dict)
-                    pred_val = loss_val[1]
-                    true_val = loss_val[2]
-                    acc_val = np.equal(
+                        print("Epoch:{}, Iteration:{}: finish train".format(ep, it))
+                        pred_val = loss_val[1]
+                        true_val = loss_val[2]
+                        acc_val = np.equal(
                         true_val,
                         pred_val > 0.5)
-                    val_loss.append(loss_val[0])
-                    val_acc.append(acc_val)
-                    val_auc.append(metrics.roc_auc_score(true_val, pred_val))
-                v_accuracy = np.mean(val_acc)
-                v_loss = np.mean(val_loss)
-                v_auc = np.mean(val_auc)
-                printstr = "train_loss: %.4f, train_acc: %.4f, train_auc: %.4f, test_loss: %.4f, test_acc: %.4f, test_auc: %.4f, train_time: %.4f"\
+                        train_loss.append(loss_val[0])
+                        train_acc.append(acc_val)
+                        train_auc.append(metrics.roc_auc_score(true_val, pred_val))
+                tra_accuracy = np.mean(train_acc)
+                tra_loss = np.mean(train_loss)
+                tra_auc = np.mean(train_auc)
+                en_time = time.time()
+                train_time = en_time - st_time
+
+                if args.val:
+                    val_loss, val_acc, val_auc = [], [], []
+                    for it in range(val_dense.shape[0] // batch_size):
+                        local_st = it * batch_size
+                        my_feed_dict[dense_input][:] = val_dense[local_st: local_st + batch_size]
+                        my_feed_dict[sparse_input][:] = val_sparse[local_st: local_st + batch_size]
+                        my_feed_dict[y_][:] = val_labels[local_st: local_st+batch_size]
+                        loss_val = sess.run([loss, y, y_], feed_dict=my_feed_dict)
+                        pred_val = loss_val[1]
+                        true_val = loss_val[2]
+                        acc_val = np.equal(
+                        true_val,
+                        pred_val > 0.5)
+                        val_loss.append(loss_val[0])
+                        val_acc.append(acc_val)
+                        val_auc.append(metrics.roc_auc_score(true_val, pred_val))
+                    v_accuracy = np.mean(val_acc)
+                    v_loss = np.mean(val_loss)
+                    v_auc = np.mean(val_auc)
+                    printstr = "train_loss: %.4f, train_acc: %.4f, train_auc: %.4f, test_loss: %.4f, test_acc: %.4f, test_auc: %.4f, train_time: %.4f"\
                     % (tra_loss, tra_accuracy, tra_auc, v_loss, v_accuracy, v_auc, train_time)
-            else:
-                printstr = "train_loss: %.4f, train_acc: %.4f, train_auc: %.4f, train_time: %.4f"\
+                else:
+                    printstr = "train_loss: %.4f, train_acc: %.4f, train_auc: %.4f, train_time: %.4f"\
                     % (tra_loss, tra_accuracy, tra_auc, train_time)
 
             print(printstr)
@@ -307,9 +324,11 @@ def test_bandwidth(cluster, task_id):
 
         start_time = time.time()
         for i in range(iters):
+            #print(1)
             sess.run(add_op.op)
         elapsed_time = time.time() - start_time
-        ans = float(iters)*(params_size / 1024 / 1024)/elapsed_time
+        ans = float(iters)*(params_size / 1024.0 / 1024.0)/elapsed_time
+        print(params_size)
         print("transfer rate: %f MB/s" % (ans))
 
 
@@ -320,7 +339,7 @@ def main():
     parser.add_argument("--rank", type=int, required=True,
                         help="rank of process")
     parser.add_argument(
-        "--config", type=str, default='./settings/tf_dist_s1_w2.json', help="config file path")
+        "--config", type=str, default='./settings/tf_local_s1_w2.json', help="config file path")
     parser.add_argument("--val", action="store_true",
                         help="whether to use validation")
     parser.add_argument("--all", action="store_true",

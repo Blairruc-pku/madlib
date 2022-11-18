@@ -24,7 +24,7 @@ def start_server(cluster, task_id):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--config", type=str, default='./settings/tf_dist_s4_w2.json', help="config file path")
+        "--config", type=str, default='./settings/tf_local_s1_w2.json', help="config file path")
     parser.add_argument("--id", type=int, required=True)
     args = parser.parse_args()
     raw_config = args.config

@@ -27,7 +27,7 @@ def download_criteo(path):
     #print("Create local files...")
 
     # save csv filed
-    df = pd.read_csv(os.path.join(path, "train_1w.txt"), sep='\t', header=None)
+    df = pd.read_csv(os.path.join(path, "train.txt"), sep='\t', header=None)
     #pdb.set_trace()
     df.columns =  ['label'] + ["I" +str(i) for i in range(1, 14)] + ["C"+str(i) for i in range(14, 40)]
     #df.to_csv(os.path.join(path, "test.csv"), index=0)
@@ -39,7 +39,7 @@ def download_criteo(path):
         'test_dense_feats.npy', 'test_sparse_feats.npy', 'test_labels.npy']]
     dense_feats = [col for col in df.columns if col.startswith('I')]
     sparse_feats = [col for col in df.columns if col.startswith('C')]
-    labels = df['label']
+    labels = np.array(df['label']).reshape(-1, 1)
     dense_feats = np.array(process_dense_feats(df, dense_feats))
     sparse_feats = np.array(process_sparse_feats(df, sparse_feats))
     num_data = dense_feats.shape[0]

@@ -5,6 +5,7 @@ Reference:
 [1] DeepFM: A Factorization-Machine based Neural Network for CTR Prediction,
     Huifeng Guo, Ruiming Tang, Yunming Yey, Zhenguo Li, Xiuqiang He.
 """
+import pdb
 
 import numpy as np
 import tensorflow as tf
@@ -14,7 +15,7 @@ from time import time
 from tensorflow.python.ops import gradients
 
 from tensorflow.contrib.layers.python.layers import batch_norm as batch_norm
-from yellowfin import YFOptimizer
+#from yellowfin import YFOptimizer
 
 gradients_avg = []
 
@@ -69,7 +70,7 @@ class DeepFM2(BaseEstimator, TransformerMixin):
             tf.set_random_seed(self.random_seed)
 
             self.feat_index = tf.placeholder(tf.int32, shape=[None, None],
-                                                 name="feat_index")  # None * F
+                                             name="feat_index")  # None * F
             self.feat_value = tf.placeholder(tf.float32, shape=[None, None],
                                                  name="feat_value")  # None * F
             self.label = tf.placeholder(tf.float32, shape=[None, 1], name="label")  # None * 1
@@ -202,6 +203,7 @@ class DeepFM2(BaseEstimator, TransformerMixin):
                 self.grad_placeholders.append(grad_ph)
                 avg_grads_and_vars.append((grad, var))
             self.grad_op = [x[0] for x in grads_and_vars]
+            #self.grad_op = grads_and_vars
             self.train_op = optimizer.apply_gradients(avg_grads_and_vars)
             self.gradients = []  # list to store gradients
 

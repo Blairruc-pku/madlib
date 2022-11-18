@@ -1,6 +1,7 @@
 import numpy as np
 import tensorflow as tf
 import time
+import pdb
 import argparse
 from tqdm import tqdm
 from sklearn import metrics
@@ -20,7 +21,7 @@ def train_criteo(model, args):
     batch_size = 128
     dense_input = tf.compat.v1.placeholder(tf.float32, [batch_size, 13])
     sparse_input = tf.compat.v1.placeholder(tf.int32, [batch_size, 26])
-    y_ = y_ = tf.compat.v1.placeholder(tf.float32, [batch_size, 1])
+    y_ = tf.compat.v1.placeholder(tf.float32, [batch_size, 1])
 
     loss, y, opt = model(dense_input, sparse_input, y_)
     train_op = opt.minimize(loss)
@@ -49,6 +50,7 @@ def train_criteo(model, args):
             st_time = time.time()
             train_loss, train_acc, train_auc = [], [], []
             for it in tqdm(range(iterations // 10 + (ep % 10 == 9) * (iterations % 10))):
+                #pdb.set_trace()
                 my_feed_dict[dense_input][:] = dense_feature[start_index: start_index + batch_size]
                 my_feed_dict[sparse_input][:] = sparse_feature[start_index: start_index + batch_size]
                 my_feed_dict[y_][:] = labels[start_index: start_index+batch_size]
