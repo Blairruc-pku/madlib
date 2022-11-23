@@ -139,19 +139,18 @@ class DeepFM(BaseEstimator, TransformerMixin):
             # optimizer
             if self.optimizer_type == "adam":
                 self.optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate, beta1=0.9, beta2=0.999,
-                                                        epsilon=1e-8).minimize(self.loss)
+                                                        epsilon=1e-8)
             elif self.optimizer_type == "adagrad":
                 self.optimizer = tf.train.AdagradOptimizer(learning_rate=self.learning_rate,
-                                                           initial_accumulator_value=1e-8).minimize(self.loss)
+                                                           initial_accumulator_value=1e-8)
             elif self.optimizer_type == "gd":
-                self.optimizer = tf.train.GradientDescentOptimizer(learning_rate=self.learning_rate).minimize(self.loss)
+                self.optimizer = tf.train.GradientDescentOptimizer(learning_rate=self.learning_rate)
             elif self.optimizer_type == "momentum":
-                self.optimizer = tf.train.MomentumOptimizer(learning_rate=self.learning_rate, momentum=0.95).minimize(
-                    self.loss)
+                self.optimizer = tf.train.MomentumOptimizer(learning_rate=self.learning_rate, momentum=0.95)
             elif self.optimizer_type == "yellowfin":
-                self.optimizer = YFOptimizer(learning_rate=self.learning_rate, momentum=0.0).minimize(
-                    self.loss)
+                self.optimizer = YFOptimizer(learning_rate=self.learning_rate, momentum=0.0)
 
+            self.train_op = self.optimizer.minimize(self.loss)
             # init
             self.saver = tf.train.Saver()
             init = tf.global_variables_initializer()
@@ -252,7 +251,7 @@ class DeepFM(BaseEstimator, TransformerMixin):
                      self.dropout_keep_fm: self.dropout_fm,
                      self.dropout_keep_deep: self.dropout_deep,
                      self.train_phase: True}
-        loss, opt = self.sess.run((self.loss, self.optimizer), feed_dict=feed_dict)
+        loss, opt = self.sess.run((self.loss, self.train_op), feed_dict=feed_dict)
         return loss
 
 
