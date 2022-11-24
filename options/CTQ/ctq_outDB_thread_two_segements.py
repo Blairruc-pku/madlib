@@ -1,8 +1,9 @@
 import os
 import pdb
+import pickle
 import sys
 import time
-import Queue
+import queue
 import threading
 import pandas as pd
 import numpy as np
@@ -21,13 +22,24 @@ class DeepFM_Global(DeepFM):
     def __init__(self, **kwargs):
         DeepFM.__init__(self, **kwargs)
 
-
-    #def save_weight(self):
+    # def save_weight(self):
 
     def get_embedding(self, ids):
         embeddings = self.sess.run(self.weights['feature_embeddings'])
         embeddings_bias = self.sess.run(self.weights["feature_bias"])
         return embeddings[ids], embeddings_bias[ids]
+
+    def save_embedding(self,filename):
+        embeddings = self.sess.run(self.weights['feature_embeddings'])
+        embeddings_bias = self.sess.run(self.weights["feature_bias"])
+        for ids, embed in enumerate(embeddings):
+            filename_id = filename+"_{}.pkl".format(ids)
+            with open(filename_id, "wb") as f:
+                embeds = list()
+                embeds.append(embeddings[ids])
+                embeds.append(embeddings_bias[ids])
+                pickle.dump(embeds, f)
+                f.close()
 
     def update_embedding(self, grad, feat_index):
         embeddings = tf.nn.embedding_lookup(self.weights["feature_embeddings"], feat_index)
@@ -64,6 +76,16 @@ class DeepFM_Global(DeepFM):
 
         return variables_updated
 
+    def save_dense(self,filename):
+        variables = self.graph.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)[2:]
+        variables_value = [self.sess.run(v) for v in variables]
+        '''variables_ = list()
+        for v in variables_value:
+            temp = tf.Variable(v)
+            variables_.append(temp)'''
+        with open(filename, 'wb') as f:
+            pickle.dump(variables_value, f)
+            f.close()
 
 class DeepFM_Local(DeepFM):
     def __init__(self, **kwargs):
@@ -269,7 +291,22 @@ class DeepFM_Local(DeepFM):
         embeddings = self.sess.run(self.weights['feature_embeddings'])
         return embeddings[ids]
 
-
+    def get_dense(self,filename):
+        while True:
+            try:
+                with open(filename,"rb") as f:
+                    dense_weights = pickle.load(f)
+                dense = list()
+                for v in dense_weights:
+                    temp = tf.Variable(v)
+                    dense.append(temp)
+                init_op = tf.variables_initializer(dense)
+                with tf.Session() as sess:
+                    sess.run(init_op)
+                f.close()
+                break
+            except:
+                time.sleep(1)
 
 
 def worker_run(model, worker_id, data, dfm_params, model_global):
@@ -280,6 +317,7 @@ def worker_run(model, worker_id, data, dfm_params, model_global):
         for i in range(total_batch):
             # compute gradients
             Xi1_batch, Xv1_batch, y1_batch = model.get_batch(Xi1_train_, Xv1_train_, y1_train_, dfm_params["batch_size"], i)
+            model.get_dense(dense_filename)
             emd_id_unique = np.unique(np.array(Xi1_batch))
             emb_id_mapping = dict()
             for j, id in enumerate(emd_id_unique):
@@ -296,12 +334,11 @@ def worker_run(model, worker_id, data, dfm_params, model_global):
             t1 = time.time()
             train_result = model.evaluate_per_batch(emd_id_local.tolist(), Xv1_batch, y1_batch)
             print("epoch[%d]-batch[%d] local worker-[%d] valid-result=%.4f [%.1f s]" % (t, i, worker_id, train_result, time.time() - t1))
-
-    return emd_id_unique, grads
+            return emd_id_unique, grads
 
 def _load_data():
-    dfTrain = pd.read_csv('../OUTDB/data/train.csv')
-    dfTest = pd.read_csv('../OUTDB/data/test.csv')
+    dfTrain = pd.read_csv('./OUTDB/data/train.csv')
+    dfTest = pd.read_csv('./OUTDB/data/test.csv')
 
     def preprocess(df):
         cols = [c for c in df.columns if c not in ["id", "target"]]
@@ -333,10 +370,13 @@ def check_for_update():
             print("Start apply gradient from worker {} batch {} ".format(worker_id, batch_id))
             model_global.update_embedding(embedding_grads, emd_id_unique)
             model_global.update_dense(dense_grads)
+            model_global.save_dense(dense_filename)
+            model_global.save_embedding(embedding_filename)
             print("Finish apply gradient from worker {} batch {} ".format(worker_id, batch_id))
 
 
-
+dense_filename = './OUTDB/dense.pkl'
+embedding_filename = './OUTDB/embed_'
 dfm_params = {
     "use_fm": True,
     "use_deep": True,
@@ -359,7 +399,7 @@ dfm_params = {
 
 
 
-Q = Queue.Queue()
+Q = queue.Queue()
 
 # load data
 dfTrain, dfTest, X_train, y_train, X_test, ids_test, cat_features_indices = _load_data()
@@ -379,7 +419,7 @@ dfm_params["feature_size"] = fd.feat_dim
 dfm_params["field_size"] = len(Xi_train[0])
 
 model_global = DeepFM_Global(**dfm_params)
-
+model_global.save_dense(dense_filename)
 
 _get = lambda x, l: [x[i] for i in l]
 
