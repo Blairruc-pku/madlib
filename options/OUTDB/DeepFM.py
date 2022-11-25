@@ -213,7 +213,7 @@ class DeepFM(BaseEstimator, TransformerMixin):
         weights["concat_projection"] = tf.Variable(
             np.random.normal(loc=0, scale=glorot, size=(input_size, 1)),
             dtype=np.float32)  # layers[i-1]*layers[i]
-        weights["concat_bias"] = tf.Variable(tf.constant(0.01), dtype=np.float32)
+        weights["concat_bias"] = tf.Variable([tf.constant(0.01)],  dtype=np.float32)
 
         return weights
 
