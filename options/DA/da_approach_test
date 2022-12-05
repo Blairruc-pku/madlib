@@ -15,8 +15,8 @@ from OUTDB.DeepFM import DeepFM
 from OUTDB import config
 from OUTDB.metrics import accuracy
 
-logfile = os.path.join('../logs', 'da_' + str(int(time.time())) + '.res')
-
+#logfile = os.path.join('../logs', 'da_' + str(int(time.time())) + '.res')
+logfile = './log.res'
 
 def log_record(content, ifprint = True):
     with open(logfile, 'a') as f:
@@ -41,6 +41,7 @@ class DeepFM_DA(DeepFM):
         #self.user = 'gpadmin'
         #self.host = '192.168.1.2'
         self.dbname = 'driving'
+        #self.database = 'gpdb'
         self.sample_tbl = 'driving'
         self.port = 5432
         self.total_sample = self._fetch_results("select count(*) from {self.sample_tbl}".format(**locals()))[0][0]
