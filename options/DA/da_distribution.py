@@ -33,7 +33,7 @@ class Schema:
 class DeepFM_DA(DeepFM):
     def __init__(self, **kwargs):
         self.user = 'ruike.xy'
-        self.host = '11.164.101.172'
+        self.host = 'localhost'
         self.dbname = 'driving'
         self.sample_tbl = 'driving'
         self.port = 5432
