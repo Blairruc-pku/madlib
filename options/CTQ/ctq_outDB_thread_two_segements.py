@@ -90,23 +90,66 @@ class DeepFM_Global(DeepFM):
 class DeepFM_Local(DeepFM):
     def __init__(self, **kwargs):
         self.emd_id_fetch = []
-        self.feature_size = 10  # temp value
         self.embedding_size = kwargs['embedding_size']
+        self.feature_size = kwargs['feature_size']
         self.graph = tf.Graph()
         with self.graph.as_default():
             self.embeddings = tf.random_normal([self.feature_size, self.embedding_size], 0.0, 0.01)
             self.embeddings_bias = tf.random_uniform([self.feature_size, 1], 0.0, 1.0)
         DeepFM.__init__(self, **kwargs)
+        variables = self.graph.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+        self.update_placehoders = list()
+        self.update_ops = list()
+        with self.graph.as_default():
+            for variable_ in variables:
+                placehoder_temp = tf.placeholder(variable_.dtype, variable_.shape)
+                self.update_placehoders.append(placehoder_temp)
+                self.update_ops.append(tf.assign(variable_, placehoder_temp))
+
+            grads_and_vars = self.optimizer.compute_gradients(self.loss)
+            self.grad_op = [x[0] for x in grads_and_vars]
+
+        self.init_weight = True
 
     def fetch_emb_id(self):
         self.emd_id_fetch = [1, 2, 3, 4, 5, 6]
         return self.emd_id_fetch
 
-    def reset_graph(self, embeddings, embeddings_bias):
+    def reset_graph(self, embeddings, embeddings_bias, dense_filename):
         self.embeddings = embeddings
         self.embeddings_bias = embeddings_bias
+        self.get_dense(dense_filename)
         self.graph = tf.Graph()
         self._init_graph()
+
+    def pull_weights(self, embedding_id):
+        dense_weights = self.get_dense(dense_filename)
+        embed_weight = list()
+        embed_bias_weight = list()
+        for i in range(self.feature_size):
+            if i in embedding_id:
+                filename_id = embedding_filename+"_{}.pkl".format(i)
+                with open(filename_id, "rb") as f:
+                    embedding = pickle.load(f)
+                    f.close()
+                embed_weight.append(embedding[0])
+                embed_bias_weight.append(embedding[1])
+            else:
+                temp = np.zeros(shape=(self.embedding_size,))
+                embed_weight.append(temp)
+                temp_bias = np.zeros(shape=(1,))
+                embed_bias_weight.append(temp_bias)
+        weights = list()
+        weights.append(embed_weight)
+        weights.append(embed_bias_weight)
+        for v in dense_weights:
+            weights.append(v)
+        feed_dict = dict()
+        for i, placeholder in enumerate(self.update_placehoders):
+            print(i, placeholder)
+            feed_dict[placeholder] = weights[i]
+        self.sess.run(self.update_ops, feed_dict=feed_dict)
+        return
 
     def gradients_compute(self, xi, xv, y):
         feed_dict = {self.feat_index: xi,
@@ -117,7 +160,7 @@ class DeepFM_Local(DeepFM):
                      self.train_phase: True}
 
         loss, grads = self.sess.run([self.loss, self.grad_op], feed_dict=feed_dict)
-
+        print(grads)
         return grads
 
     def evaluate_per_batch(self, Xi, Xv, y):
@@ -128,7 +171,7 @@ class DeepFM_Local(DeepFM):
                      self.dropout_keep_deep: [1.0] * len(self.dropout_deep),
                      self.train_phase: False}
         batch_out = self.sess.run(self.out, feed_dict=feed_dict)
-        batch_out = np.reshape(batch_out,newshape=np.array(y).shape)
+        batch_out = np.reshape(batch_out, newshape=np.array(y).shape)
         y = np.array(y)
         correct_num = 0
         for i in range(len(batch_out)):
@@ -292,6 +335,7 @@ class DeepFM_Local(DeepFM):
         return embeddings[ids]
 
     def get_dense(self,filename):
+        dense_weights = list()
         while True:
             try:
                 with open(filename,"rb") as f:
@@ -307,6 +351,7 @@ class DeepFM_Local(DeepFM):
                 break
             except:
                 time.sleep(1)
+        return dense_weights
 
 
 def worker_run(model, worker_id, data, dfm_params, model_global):
@@ -317,15 +362,15 @@ def worker_run(model, worker_id, data, dfm_params, model_global):
         for i in range(total_batch):
             # compute gradients
             Xi1_batch, Xv1_batch, y1_batch = model.get_batch(Xi1_train_, Xv1_train_, y1_train_, dfm_params["batch_size"], i)
-            model.get_dense(dense_filename)
             emd_id_unique = np.unique(np.array(Xi1_batch))
             emb_id_mapping = dict()
             for j, id in enumerate(emd_id_unique):
                 emb_id_mapping[id] = j
             emd_id_local = np.vectorize(emb_id_mapping.get)(Xi1_batch)
             #print(emd_id_local)
-            embeddings, embeddings_bias = model_global.get_embedding(emd_id_unique)
-            model.reset_graph(embeddings,embeddings_bias)
+            model.pull_weights(emd_id_unique)
+            '''embeddings, embeddings_bias = model_global.get_embedding(emd_id_unique)
+            model.reset_graph(embeddings, embeddings_bias, dense_filename)'''
             grads = model.gradients_compute(emd_id_local.tolist(), Xv1_batch, y1_batch)
             '''print([n.name for n in model.graph.as_graph_def().node if "Variable" in n.op])
             print(model.graph.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES))'''
