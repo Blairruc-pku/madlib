@@ -9,9 +9,12 @@ import tensorflow as tf
 import datetime
 import time
 from collections import OrderedDict
+from decimal import *
 
+from sklearn.metrics import classification_report
 from tensorflow import float32
 
+import metrics
 from utils import serialize_nd_weights, deserialize_as_nd_weights, deserialize_gradient, serialize_gradient,serialize_embedding,deserialize_embedding
 from tensorflow.python.framework.ops import IndexedSlicesValue
 sys.path.append('..')
@@ -535,7 +538,7 @@ class DeepFM_Worker(DeepFM_DA):
         self.pull_weights(emd_id_unique)
         grads = self.gradients_compute( Xi_batch, Xv_batch, y_batch)
         train_results = self.evaluate_per_batch(Xi_batch, Xv_batch, y_batch)
-        print("batch[%d] local worker-[%d] train_results=%.4f [%.1f s]" % (batch_id, self.worker_id, train_results, time.time() - t1))
+        print("batch[%d] local worker-[%d] train_results=%.4f [%.1f s]" % (batch_id, self.worker_id, float(float(train_results)/float(self.batch_size)), time.time() - t1))
         self.push_graident(grads)
 
     def run(self):
@@ -553,20 +556,20 @@ class DeepFM_Worker(DeepFM_DA):
                      self.dropout_keep_fm: [1.0] * len(self.dropout_fm),
                      self.dropout_keep_deep: [1.0] * len(self.dropout_deep),
                      self.train_phase: False}
-        batch_out = self.sess.run(self.out, feed_dict=feed_dict)
-        batch_out = np.reshape(batch_out, newshape=np.array(y).shape)
-        y = np.array(y)
+        batch_out,label_out = self.sess.run([self.out, self.label], feed_dict=feed_dict)
         correct_num = 0
         for i in range(len(batch_out)):
             if batch_out[i][0] > 0.5:
-                batch_out[i][0] = 1
-                if batch_out[i][0] == y[i][0]:
+                batch_out[i][0] = 1.0
+                if batch_out[i][0] == label_out[i][0]:
                     correct_num += 1
             else:
-                batch_out[i][0] = 0
-                if batch_out[i][0] == y[i][0]:
+                batch_out[i][0] = 0.0
+                if batch_out[i][0] == label_out[i][0]:
                     correct_num += 1
-        return correct_num / len(y)
+        print(correct_num, self.batch_size)
+        return correct_num
+
 
 
 if __name__ == "__main__":
