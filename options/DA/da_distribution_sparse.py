@@ -71,7 +71,6 @@ class DeepFM_DA(DeepFM):
         DeepFM.__init__(self, **kwargs)
         log_record("Initialized model")
 
-
     def _connect_db(self):
         conn = p2.connect(host=self.host, user=self.user, dbname=self.dbname, port=self.port)
         return conn
@@ -141,7 +140,6 @@ class DeepFM_Master(DeepFM_DA):
         else:
             log_record("Table {} exists".format(dense_model_table))
 
-
         if not self.check_table_exists(embed_gradient_table):
             colnames = ['model_id', 'worker_id', 'gradient', 'shape', 'version', 'model_version', 'auxiliaries']
             coltypes = ['int', 'int', 'bytea', 'Text', 'int', 'int', 'Text']
@@ -189,11 +187,11 @@ class DeepFM_Master(DeepFM_DA):
     def save_embedding(self, weights, embed_id):
         conn = self._connect_db()
         cursor = conn.cursor()
-        for i in embed_id:
+        for i in range(len(embed_id)):
             weights_serialized = serialize_embedding(weights[0][i])
             weights_serialized_bias = serialize_embedding(weights[1][i])
-            sql_insert = '''UPDATE {} SET (model_id, embedding_weight, embedding_bias) = ({}, %s, %s) WHERE model_id = {} AND id = {}'''.format(
-                Schema.Embed_Model_Table, self.model_id, self.model_id, i)
+            sql_insert = '''UPDATE {} SET ( embedding_weight, embedding_bias) = ( %s, %s) WHERE model_id = {} AND id = {}'''.format(
+                Schema.Embed_Model_Table, self.model_id, embed_id[i])
             cursor.execute(sql_insert, (p2.Binary(weights_serialized), p2.Binary(weights_serialized_bias)))
         conn.commit()
 
@@ -208,58 +206,44 @@ class DeepFM_Master(DeepFM_DA):
 
     def update(self, grads, embed_id):
         # 分别拉取dense并根据梯度用到的embedding_id拉取对应的embedding
-        dense_result = self._fetch_results("SELECT weight, shape FROM dense_model WHERE model_id ={self.model_id}".format(**locals()))
+        dense_result = self._fetch_results("SELECT weight, shape FROM {} WHERE model_id ={}".format(Schema.Dense_Model_Table, self.model_id))
         shapes_fetch = eval(dense_result[0][1])
         dense_weights = deserialize_as_nd_weights(dense_result[0][0], shapes_fetch)
+
+        embedding_result = self._fetch_results("SELECT embedding_weight, embedding_bias, id FROM {} WHERE id in {} and model_id={}".format(Schema.Embed_Model_Table, tuple(embed_id), self.model_id))
+        emb_id_mapping = dict()
+        embedding, embedding_bias = list(), list()
+        embed_id_ = list()
+        for i, row in enumerate(embedding_result):
+            embedding.append(deserialize_embedding(row[0]))
+            embedding_bias.append(deserialize_embedding(row[1]))
+            emb_id_mapping[row[2]] = i
+            embed_id_.append(row[2])
+
         variables_ = list()
-        embedding = list()
-        embedding_bias = list()
-        cnt = 0
-        embed_result = self._fetch_results(
-            "SELECT embedding_weight, shape, embedding_bias, id FROM embed_model WHERE id = {cnt} and model_id = {self.model_id}".format(
-                **locals()))
-        
-        embed_weights = deserialize_embedding(embed_result[0][0])
-        embed_bias_weights = deserialize_embedding(embed_result[0][2])
-        for i in range(self.feature_size):
-            if i in embed_id:
-                embed_result = self._fetch_results(
-                    "SELECT embedding_weight, shape, embedding_bias, id FROM embed_model WHERE id = {i} and model_id = {self.model_id}".format(
-                        **locals()))
-                embed_weights_i = deserialize_embedding(embed_result[0][0])
-                embed_bias_weights_i = deserialize_embedding(embed_result[0][2])
-                embedding.append(embed_weights_i)
-                embedding_bias.append(embed_bias_weights_i)
-            else:
-                # 为了参数feed_dict，未使用的embedding随机设置
-                embedding.append(embed_weights)
-                embedding_bias.append(embed_bias_weights)
         variables_.append(np.array(embedding))
         variables_.append(np.array(embedding_bias))
         for v in dense_weights:
             variables_.append(v)
+
         weights = list()
         for v in variables_:
             temp = tf.Variable(v)
             weights.append(temp)
         init_op = tf.variables_initializer(weights)
-        '''
-        feed_dict = dict()
-        for i, placeholder in enumerate(self.update_placehoders):
-            feed_dict[placeholder] = variables_[i]'''
 
         for i, grad_ in enumerate(grads):
             if isinstance(grad_, IndexedSlicesValue):
-                grads[i] = tf.IndexedSlices(grads[i].values, grads[i].indices.astype('int64'))
+                indices = np.vectorize(emb_id_mapping.get)(grads[i].indices.astype('int64'))
+                grads[i] = tf.IndexedSlices(grads[i].values, indices)
 
         with tf.Session() as sess:
-            '''self.sess.run(self.update_ops, feed_dict=feed_dict)'''
             sess.run(init_op)
-            #variable = self.graph.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
             update = self.optimizer.apply_gradients(zip(grads, weights))
             sess.run(update)
             weights_updated = [sess.run(v) for v in weights]
-        self.save_embedding(weights_updated[0:2],embed_id)
+
+        self.save_embedding(weights_updated[0:2], embed_id_)
         self.save_dense_weight(weights_updated[2:])
         return weights_updated
 
@@ -285,14 +269,16 @@ class DeepFM_Master(DeepFM_DA):
         version = self.version[worker_id]
         query = '''SELECT gradient, shape, auxiliaries FROM {dense_gradient_table} WHERE model_id={self.model_id} AND version={version} AND worker_id={worker_id}'''.format(**locals())
         results = self._fetch_results(query)
-        log_record("[Master] [Worker{}] Receive gradients with version {}".format(worker_id, version))
         dense_gradient_serialized, shape, auxiliaries = results[0]
         dense_gradients = deserialize_gradient(dense_gradient_serialized, eval(shape), eval(auxiliaries))
+        log_record("[Master] [Worker{}] Receive dense gradients with version {}".format(worker_id, version))
+
         query = '''SELECT gradient, shape, auxiliaries FROM {embed_gradient_table} WHERE model_id={self.model_id} AND version={version} AND worker_id={worker_id}'''.format(
             **locals())
         results = self._fetch_results(query)
         embed_gradient_serialized, shape, auxiliaries = results[0]
         embed_gradients = deserialize_gradient(embed_gradient_serialized, eval(shape), eval(auxiliaries))
+        log_record("[Master] [Worker{}] Receive embedding gradients with version {}".format(worker_id, version))
         grads = list()
         embed_id = list()
         for e in embed_gradients:
@@ -300,36 +286,9 @@ class DeepFM_Master(DeepFM_DA):
             embed_id.append(e.indices.astype('int64'))
         for d in dense_gradients:
             grads.append(d)
-        embed_id_unique = np.unique(np.array(embed_id))
-        '''grads = list()
-        embed_grads = list()
-        embed_bias_grads = list()
-        embed_id_grad = list()
-        dense_shapeL = list()
-        for r in results:
-            embed_gradient_serialized, embed_bias_gradient_serialized, shape, auxiliaries, embed_id = r
-            embed_gradients = deserialize_embedding(embed_gradient_serialized)
-            embed_bias_gradients = deserialize_embedding(embed_bias_gradient_serialized)
-            embed_grads.append(embed_gradients)
-            embed_bias_grads.append(embed_bias_gradients)
-            embed_id_grad.append(embed_id)
-            dense_shapeL = auxiliaries
-        grads_0 = list()
-        grads_1 = list()
-        cnt = 0
-        for i in range(self.feature_size):
-            if i not in embed_id_grad:
-                temp = np.zeros(shape=(self.embedding_size,))
-                grads_0.append(temp)
-                temp = np.zeros(shape=(1,))
-                grads_1.append(temp)
-            else:
-                grads_0.append(embed_grads[cnt])
-                grads_1.append(embed_bias_grads[cnt])
-                cnt+=1
-        grads.append(tf.IndexedSlices(np.array(grads_0), indices = np.arange(self.feature_size), dense_shape=dense_shapeL[0]))
-        grads.append(tf.IndexedSlices(np.array(grads_1), indices = np.arange(self.feature_size), dense_shape=dense_shapeL[1]))'''
-        self.update(grads,embed_id_unique)
+
+        embed_id_unique = np.unique(np.array(embed_id)).tolist()
+        self.update(grads, embed_id_unique)
         self.version[worker_id] = self.version[worker_id] + 1
 
         query = "UPDATE {} SET model_version={} WHERE model_id={} AND worker_id={}".format(dense_gradient_table, self.version[worker_id], self.model_id,worker_id)
@@ -350,9 +309,9 @@ class DeepFM_Worker(DeepFM_DA):
         self.update_ops = list()
         with self.graph.as_default():
             for variable_ in variables:
-                placehoder_temp = tf.placeholder(variable_.dtype, variable_.shape)
+                placehoder_temp = tf.placeholder(variable_.dtype, [None for i in  variable_.shape])
                 self.update_placehoders.append(placehoder_temp)
-                self.update_ops.append(tf.assign(variable_, placehoder_temp))
+                self.update_ops.append(tf.assign(variable_, placehoder_temp, validate_shape=False))
 
             grads_and_vars = self.optimizer.compute_gradients(self.loss)
             self.grad_op = [x[0] for x in grads_and_vars]
@@ -364,7 +323,7 @@ class DeepFM_Worker(DeepFM_DA):
         variables_value = self.sess.run(variable)
         log_record(variables_value)
 
-    def pull_weights(self,embed_id_unique):
+    def pull_weights(self, embed_id_unique):
         # 根据embedding_id进行拉取对应的embedding
         sql_check_version = "SELECT model_version FROM {} WHERE worker_id={} AND model_id={} ".format(Schema.Dense_GRADIENT_TABLE, self.worker_id,self.model_id)
         dense_result = self._fetch_results(sql_check_version)
@@ -381,21 +340,13 @@ class DeepFM_Worker(DeepFM_DA):
         dense_weights = deserialize_as_nd_weights(dense_result[0][0], shapes_fetch)
         embedding = list()
         embedding_bias = list()
-        for i in range(self.feature_size):
-            if i in embed_id_unique:
-                embed_result = self._fetch_results(
-                    "SELECT embedding_weight, shape, embedding_bias, id FROM embed_model WHERE id = {i}".format(
-                        **locals()))
-                embed_weights = deserialize_embedding(embed_result[0][0])
-                embed_bias_weights = deserialize_embedding(embed_result[0][2])
-                embedding.append(embed_weights)
-                embedding_bias.append(embed_bias_weights)
-            else:
-                # 为了参数feed_dict，未使用的embedding默认为0
-                temp = np.zeros(shape=(self.embedding_size,))
-                embedding.append(temp)
-                temp = np.zeros(shape=(1,))
-                embedding_bias.append(temp)
+        embed_result = self._fetch_results( "SELECT embedding_weight, shape, embedding_bias, id FROM embed_model WHERE id in {} and model_id={}".format(tuple(embed_id_unique), self.model_id))
+        emb_id_mapping = dict()
+        for i, row in enumerate(embed_result):
+            embedding.append(deserialize_embedding(row[0]))
+            embedding_bias.append(deserialize_embedding(row[2]))
+            emb_id_mapping[row[3]] = i
+
         variables_.append(np.array(embedding))
         variables_.append(np.array(embedding_bias))
         for v in dense_weights:
@@ -403,8 +354,10 @@ class DeepFM_Worker(DeepFM_DA):
         feed_dict = dict()
         for i, placeholder in enumerate(self.update_placehoders):
             feed_dict[placeholder] = variables_[i]
+
         self.sess.run(self.update_ops, feed_dict=feed_dict)
-        return
+
+        return emb_id_mapping
 
 
     def get_block_info(self):
@@ -436,8 +389,6 @@ class DeepFM_Worker(DeepFM_DA):
                 assert  self.check_ctid(res) == record_id, "Wrong ctid generated"
                 return res
             record_cum = record_cum + self.block_info[block_id]
-
-
 
     def get_batch_data_block(self, batch_size, index):
         time_begin = time.time()
@@ -471,21 +422,12 @@ class DeepFM_Worker(DeepFM_DA):
 
         return grads
 
-
     def push_graident(self, grads):
         embed_grads = grads[0:2]
         dense_grads = grads[2:]
         embed_gradient_table, dense_gradient_table = Schema.Embed_GRADIENT_TABLE, Schema.Dense_GRADIENT_TABLE
-        # 分别更新dense表和embedding表
+        # 更新embedding表
         grads_serialized, shapes, auxiliaries = serialize_gradient(embed_grads)
-        '''embed_id_local = list()
-        dense_shapeL = list()
-        for i, grad_ in enumerate(embed_grads):
-            if isinstance(grad_, IndexedSlicesValue):
-                embed_grads[i] = tf.IndexedSlices(embed_grads[i].values, embed_grads[i].indices.astype('int64'))
-                dense_shapeL.append(embed_grads[i].dense_shape.tolist())
-                embed_id_local.append(embed_grads[i].indices.astype('int64'))
-        embed_id_unique = np.unique(embed_id_local)'''
         sql = "SELECT version FROM {embed_gradient_table} WHERE model_id = {self.model_id} AND worker_id = {self.worker_id}".format(
             **locals())
         result = self._fetch_results(sql)
@@ -504,6 +446,7 @@ class DeepFM_Worker(DeepFM_DA):
             cursor.execute(sql_update, (p2.Binary(grads_serialized), str(shapes), str(auxiliaries)))
             conn.commit()
 
+        # 更新dense表
         grads_serialized, shapes, auxiliaries = serialize_gradient(dense_grads)
         sql = "SELECT version FROM {dense_gradient_table} WHERE model_id = {self.model_id} AND worker_id = {self.worker_id}".format(**locals())
         result = self._fetch_results(sql)
@@ -525,14 +468,28 @@ class DeepFM_Worker(DeepFM_DA):
         log_record("[Worker{self.worker_id}] Push gradient with version {self.version}".format(**locals()))
         self.version = self.version + 1
 
+
+    def gradient_transform(self, grads, emb_id_mapping):
+        inv_map = {v: k for k, v in emb_id_mapping.iteritems()}
+        for i in  range(len(grads)):
+            grad = grads[i]
+            if isinstance(grad, IndexedSlicesValue):
+                indices = np.vectorize(inv_map.get)(grad.indices)
+                grad = IndexedSlicesValue(values=grad.values, indices=indices, dense_shape=grad.dense_shape)
+                grads[i] = grad
+
+        return  grads
+
     def run_one_batch(self, batch_id):
         Xi_batch, Xv_batch, y_batch = self.get_batch_data_block( self.batch_size, batch_id)
         t1 = time.time()
         emd_id_unique = np.unique(np.array(Xi_batch))
-        self.pull_weights(emd_id_unique)
-        grads = self.gradients_compute( Xi_batch, Xv_batch, y_batch)
-        train_results = self.evaluate_per_batch(Xi_batch, Xv_batch, y_batch)
+        emb_id_mapping = self.pull_weights(emd_id_unique)
+        Xi_batch_local = np.vectorize(emb_id_mapping.get)(Xi_batch)
+        grads = self.gradients_compute( Xi_batch_local, Xv_batch, y_batch)
+        grads = self.gradient_transform(grads, emb_id_mapping)
         self.push_graident(grads)
+        train_results = self.evaluate_per_batch(Xi_batch_local, Xv_batch, y_batch)
         log_record("[Worker%d] batch%d train_results=%.4f [%.1f s]" % (self.worker_id, batch_id, float(float(train_results)/float(self.batch_size)), time.time() - t1))
 
     def run(self):
@@ -562,7 +519,6 @@ class DeepFM_Worker(DeepFM_DA):
                 if batch_out[i][0] == label_out[i][0]:
                     correct_num += 1
         return correct_num
-
 
 
 if __name__ == "__main__":
@@ -597,9 +553,6 @@ if __name__ == "__main__":
         model_worker = DeepFM_Worker(worker_id=worker_id, **dfm_params)
         model_worker.run()
 
-
-
     for i in range(worker_num):
         threading.Thread(target=setup_worker, args=(i, dfm_params), name='worker{}'.format(i)).start()
 
-    #model_master.apply_grads_loop()
