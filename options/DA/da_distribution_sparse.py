@@ -14,13 +14,15 @@ from decimal import *
 from sklearn.metrics import classification_report
 from tensorflow import float32
 
-import metrics
+
 from utils import serialize_nd_weights, deserialize_as_nd_weights, deserialize_gradient, serialize_gradient,serialize_embedding,deserialize_embedding
 from tensorflow.python.framework.ops import IndexedSlicesValue
 sys.path.append('..')
-from DeepFM import DeepFM
-import config
-from metrics import accuracy
+from OUTDB.DeepFM import DeepFM
+from OUTDB import config
+from OUTDB.metrics import accuracy
+from OUTDB import metrics
+
 
 #logfile = os.path.join('../logs', 'da_' + str(int(time.time())) + '.res')
 logfile = './log.res'
@@ -43,32 +45,25 @@ class Schema:
 
 class DeepFM_DA(DeepFM):
     def __init__(self, **kwargs):
-        #self.user = 'ruike.xy'
-        #self.host = '11.164.101.172'
-        self.user = 'gpadmin'
-        self.host = '192.168.1.2'
-        self.dbname = 'gpdb'
+        self.user = 'ruike.xy'
+        self.host = '11.164.101.172'
+        self.dbname = 'driving'
+        # self.user = 'gpadmin'
+        # self.host = '192.168.1.2'
+        # self.dbname = 'gpdb'
         self.sample_tbl = 'driving'
         self.port = 5432
         self.total_sample = self._fetch_results("select count(*) from {self.sample_tbl}".format(**locals()))[0][0]
         self.Xi_train, self.Xv_train, self.y_train = list(), list(), list()
         columns = self._fetch_results("select column_name FROM information_schema.columns WHERE table_name ='{self.sample_tbl}'".format(**locals()))
         self.xi_index = len(columns) / 2
-        column_i = list()
-        column_v = list()
-        index_columns = list()
-        for i in range(1, 40):
-            column_i.append("i{}".format(i))
-        for i in range(1, 40):
-            column_v.append("v{}".format(i))
-        for c in columns:
-            if c[0] in column_i:
-                index_columns.append(c[0])
-        #index_columns = columns[0:self.xi_index-1]
+        index_columns = columns[0:self.xi_index-1]
         feat_dim = 0
         for column in index_columns:
+            column = column[0]
             num = self._fetch_results("select count(distinct {column}) from {self.sample_tbl}".format(**locals()))[0][0]
             feat_dim = feat_dim + num
+
         kwargs["field_size"] = int(self.xi_index - 1)
         kwargs["feature_size"] = feat_dim
         log_record("Feat_dim:{}".format(feat_dim))
@@ -76,14 +71,6 @@ class DeepFM_DA(DeepFM):
         DeepFM.__init__(self, **kwargs)
         log_record("Initialized model")
 
-        '''variables = self.graph.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
-        self.update_placehoders = list()
-        self.update_ops = list()
-        with self.graph.as_default():
-            for variable_ in variables:
-                placehoder_temp = tf.placeholder(variable_.dtype, variable_.shape)
-                self.update_placehoders.append(placehoder_temp)
-                self.update_ops.append(tf.assign(variable_, placehoder_temp))'''
 
     def _connect_db(self):
         conn = p2.connect(host=self.host, user=self.user, dbname=self.dbname, port=self.port)
@@ -138,9 +125,9 @@ class DeepFM_Master(DeepFM_DA):
         embed_model_table, dense_model_table, embed_gradient_table, dense_gradient_table =Schema.Embed_Model_Table, Schema.Dense_Model_Table, Schema.Embed_GRADIENT_TABLE, Schema.Dense_GRADIENT_TABLE
         if not self.check_table_exists(embed_model_table):
             colnames = ['model_id', 'embedding_weight', 'shape', 'embedding_bias', 'id', 'description']
-            coltypes = ['SERIAL PRIMARY KEY', 'bytea', 'Text', 'bytea', 'int', 'TEXT']
+            coltypes = ['int', 'bytea', 'Text', 'bytea', 'int', 'TEXT']
             col_defs = ','.join(map(' '.join, zip(colnames, coltypes)))
-            sql = "CREATE TABLE embed_model ({col_defs})".format(**locals())
+            sql = "CREATE TABLE {embed_model_table} ({col_defs})".format(**locals())
             self._execute(sql)
         else:
             log_record("Table {} exists".format(embed_model_table))
@@ -149,16 +136,17 @@ class DeepFM_Master(DeepFM_DA):
             colnames = ['model_id', 'weight', 'shape', 'name', 'description']
             coltypes = ['SERIAL PRIMARY KEY', 'bytea', 'Text', 'TEXT', 'TEXT']
             col_defs = ','.join(map(' '.join, zip(colnames, coltypes)))
-            sql = "CREATE TABLE dense_model ({col_defs})".format(**locals())
+            sql = "CREATE TABLE {dense_model_table} ({col_defs})".format(**locals())
             self._execute(sql)
         else:
             log_record("Table {} exists".format(dense_model_table))
+
 
         if not self.check_table_exists(embed_gradient_table):
             colnames = ['model_id', 'worker_id', 'gradient', 'shape', 'version', 'model_version', 'auxiliaries']
             coltypes = ['int', 'int', 'bytea', 'Text', 'int', 'int', 'Text']
             col_defs = ','.join(map(' '.join, zip(colnames, coltypes)))
-            sql = "CREATE TABLE embed_gradient_table ({col_defs})".format(**locals())
+            sql = "CREATE TABLE {embed_gradient_table} ({col_defs})".format(**locals())
             self._execute(sql)
         else:
             log_record("Table {} exists".format(embed_gradient_table))
@@ -167,7 +155,7 @@ class DeepFM_Master(DeepFM_DA):
             colnames = ['model_id', 'worker_id', 'gradient', 'shape', 'version', 'model_version','auxiliaries']
             coltypes = ['int', 'int', 'bytea', 'Text', 'int', 'int', 'Text']
             col_defs = ','.join(map(' '.join, zip(colnames, coltypes)))
-            sql = "CREATE TABLE dense_gradient_table ({col_defs})".format(**locals())
+            sql = "CREATE TABLE {dense_gradient_table} ({col_defs})".format(**locals())
             self._execute(sql)
         else:
             log_record("Table {} exists".format(dense_gradient_table))
@@ -176,22 +164,27 @@ class DeepFM_Master(DeepFM_DA):
         variables_value = [self.sess.run(v) for v in variables]
         shapes = [v.shape.as_list() for v in variables]
         weight_serialized = serialize_nd_weights(variables_value)
+        weight = deserialize_as_nd_weights(weight_serialized, shapes)
         sql_insert_dense = '''INSERT INTO {} VALUES(DEFAULT, %s, %s )'''.format(dense_model_table)
         conn = self._connect_db()
         cursor = conn.cursor()
         cursor.execute(sql_insert_dense, (p2.Binary(weight_serialized), str(shapes)))
-        embeddings = self.sess.run(self.weights['feature_embeddings'])
-        embeddings_bias = self.sess.run(self.weights["feature_bias"])
-        for i in range(self.feature_size):
-            embed_weight_serialized = serialize_embedding(embeddings[i])
-            embed_bias_weight_serialized = serialize_embedding(embeddings_bias[i])
-            shapes = [embeddings[i].shape,embeddings_bias[i].shape]
-            sql_insert_embed = '''INSERT INTO {} VALUES(DEFAULT, %s, %s, %s, %s )'''.format(embed_model_table)
-            cursor.execute(sql_insert_embed, (p2.Binary(embed_weight_serialized), str(shapes), p2.Binary(embed_bias_weight_serialized), i))
         conn.commit()
 
         self.model_id = self._fetch_results("SELECT max(model_id) from {dense_model_table}".format(**locals()))[0][0]
         log_record("Register model {} in DB".format(self.model_id))
+
+        embeddings = self.sess.run(self.weights['feature_embeddings'])
+        embeddings_bias = self.sess.run(self.weights["feature_bias"])
+        conn = self._connect_db()
+        cursor = conn.cursor()
+        for i in range(self.feature_size):
+            embed_weight_serialized = serialize_embedding(embeddings[i])
+            embed_bias_weight_serialized = serialize_embedding(embeddings_bias[i])
+            shapes = [embeddings[i].shape,embeddings_bias[i].shape]
+            sql_insert_embed = '''INSERT INTO {} VALUES({}, %s, %s, %s, %s )'''.format(embed_model_table, self.model_id)
+            cursor.execute(sql_insert_embed, (p2.Binary(embed_weight_serialized), str(shapes), p2.Binary(embed_bias_weight_serialized), i))
+        conn.commit()
 
     def save_embedding(self, weights, embed_id):
         conn = self._connect_db()
@@ -223,14 +216,15 @@ class DeepFM_Master(DeepFM_DA):
         embedding_bias = list()
         cnt = 0
         embed_result = self._fetch_results(
-            "SELECT embedding_weight, shape, embedding_bias, id FROM embed_model WHERE id = {cnt}".format(
+            "SELECT embedding_weight, shape, embedding_bias, id FROM embed_model WHERE id = {cnt} and model_id = {self.model_id}".format(
                 **locals()))
+        
         embed_weights = deserialize_embedding(embed_result[0][0])
         embed_bias_weights = deserialize_embedding(embed_result[0][2])
         for i in range(self.feature_size):
             if i in embed_id:
                 embed_result = self._fetch_results(
-                    "SELECT embedding_weight, shape, embedding_bias, id FROM embed_model WHERE id = {i}".format(
+                    "SELECT embedding_weight, shape, embedding_bias, id FROM embed_model WHERE id = {i} and model_id = {self.model_id}".format(
                         **locals()))
                 embed_weights_i = deserialize_embedding(embed_result[0][0])
                 embed_bias_weights_i = deserialize_embedding(embed_result[0][2])
@@ -275,7 +269,7 @@ class DeepFM_Master(DeepFM_DA):
 
     def apply_grads(self):
         embed_gradient_table, dense_gradient_table = Schema.Embed_GRADIENT_TABLE, Schema.Dense_GRADIENT_TABLE
-        embed_query = '''SELECT worker_id, version FROM {embed_gradient_table} WHERE model_id={self.model_id}'''.format(**locals())
+        embed_query = '''SELECT worker_id, version FROM {dense_gradient_table} WHERE model_id={self.model_id}'''.format(**locals())
         embed_results = self._fetch_results(embed_query)
         if embed_results:
             for row in embed_results:
@@ -284,8 +278,7 @@ class DeepFM_Master(DeepFM_DA):
                     self.version[worker_id] = 0
                 if version == self.version[worker_id]:
                     self.apply_grads_per_worker(worker_id)
-        else:
-            time.sleep(5)
+
 
     def apply_grads_per_worker(self, worker_id):
         embed_gradient_table, dense_gradient_table = Schema.Embed_GRADIENT_TABLE, Schema.Dense_GRADIENT_TABLE
@@ -383,7 +376,7 @@ class DeepFM_Worker(DeepFM_DA):
         if self.init_weight:
             self.init_weight = False
         variables_ = list()
-        dense_result = self._fetch_results("SELECT weight, shape FROM dense_model WHERE model_id = 1")
+        dense_result = self._fetch_results("SELECT weight, shape FROM dense_model WHERE model_id = {}".format(self.model_id))
         shapes_fetch = eval(dense_result[0][1])
         dense_weights = deserialize_as_nd_weights(dense_result[0][0], shapes_fetch)
         embedding = list()
@@ -455,9 +448,9 @@ class DeepFM_Worker(DeepFM_DA):
         end_block = self.get_ctid(end)
         select_query = "select * from {self.sample_tbl} where ctid >= '{start_block}' and ctid< '{end_block}' AND gp_segment_id={self.worker_id}".format(**locals())
         data = self._fetch_results(select_query)
-        xi = [item[1:self.xi_index] for item in data]
-        xv = [item[self.xi_index: -1] for item in data]
-        y = [[item[-1]] for item in data]
+        xi = [ map(int, item[1:self.xi_index] )for item in data]
+        xv = [map(float, item[self.xi_index: -1] )for item in data]
+        y = [[float(item[-1])] for item in data]
         assert len(y) == end - start, "Number of data selected ({}) doesn't match requirement ({})).".format(len(y), end-start)
         self.Xi_train = self.Xi_train + xi
         self.Xv_train = self.Xv_train + xv
@@ -484,23 +477,6 @@ class DeepFM_Worker(DeepFM_DA):
         dense_grads = grads[2:]
         embed_gradient_table, dense_gradient_table = Schema.Embed_GRADIENT_TABLE, Schema.Dense_GRADIENT_TABLE
         # 分别更新dense表和embedding表
-        grads_serialized, shapes, auxiliaries = serialize_gradient(dense_grads)
-        sql = "SELECT version FROM {dense_gradient_table} WHERE model_id = {self.model_id} AND worker_id = {self.worker_id}".format(**locals())
-        result = self._fetch_results(sql)
-        if result == []:
-            sql_insert = '''INSERT INTO {dense_gradient_table} (model_id, worker_id, gradient, shape, version, auxiliaries) VALUES ({self.model_id}, {self.worker_id}, %s , %s, {self.version}, %s)'''.format(**locals())
-            conn = self._connect_db()
-            cursor = conn.cursor()
-            cursor.execute(sql_insert, (p2.Binary(grads_serialized), str(shapes), str(auxiliaries)))
-            conn.commit()
-
-        else:
-            sql_update = '''UPDATE {dense_gradient_table} SET (gradient, shape, version, auxiliaries) = (%s, %s, {self.version} ,%s) WHERE model_id = {self.model_id} AND worker_id={self.worker_id}'''.format(**locals())
-            conn = self._connect_db()
-            cursor = conn.cursor()
-            cursor.execute(sql_update, (p2.Binary(grads_serialized), str(shapes), str(auxiliaries)))
-            conn.commit()
-
         grads_serialized, shapes, auxiliaries = serialize_gradient(embed_grads)
         '''embed_id_local = list()
         dense_shapeL = list()
@@ -528,6 +504,24 @@ class DeepFM_Worker(DeepFM_DA):
             cursor.execute(sql_update, (p2.Binary(grads_serialized), str(shapes), str(auxiliaries)))
             conn.commit()
 
+        grads_serialized, shapes, auxiliaries = serialize_gradient(dense_grads)
+        sql = "SELECT version FROM {dense_gradient_table} WHERE model_id = {self.model_id} AND worker_id = {self.worker_id}".format(**locals())
+        result = self._fetch_results(sql)
+        if result == []:
+            sql_insert = '''INSERT INTO {dense_gradient_table} (model_id, worker_id, gradient, shape, version, auxiliaries) VALUES ({self.model_id}, {self.worker_id}, %s , %s, {self.version}, %s)'''.format(**locals())
+            conn = self._connect_db()
+            cursor = conn.cursor()
+            cursor.execute(sql_insert, (p2.Binary(grads_serialized), str(shapes), str(auxiliaries)))
+            conn.commit()
+
+        else:
+            sql_update = '''UPDATE {dense_gradient_table} SET (gradient, shape, version, auxiliaries) = (%s, %s, {self.version} ,%s) WHERE model_id = {self.model_id} AND worker_id={self.worker_id}'''.format(**locals())
+            conn = self._connect_db()
+            cursor = conn.cursor()
+            cursor.execute(sql_update, (p2.Binary(grads_serialized), str(shapes), str(auxiliaries)))
+            conn.commit()
+
+
         log_record("[Worker{self.worker_id}] Push gradient with version {self.version}".format(**locals()))
         self.version = self.version + 1
 
@@ -538,8 +532,8 @@ class DeepFM_Worker(DeepFM_DA):
         self.pull_weights(emd_id_unique)
         grads = self.gradients_compute( Xi_batch, Xv_batch, y_batch)
         train_results = self.evaluate_per_batch(Xi_batch, Xv_batch, y_batch)
-        print("batch[%d] local worker-[%d] train_results=%.4f [%.1f s]" % (batch_id, self.worker_id, float(float(train_results)/float(self.batch_size)), time.time() - t1))
         self.push_graident(grads)
+        log_record("[Worker%d] batch%d train_results=%.4f [%.1f s]" % (self.worker_id, batch_id, float(float(train_results)/float(self.batch_size)), time.time() - t1))
 
     def run(self):
         total_batch = int(self.total_sample_worker / self.batch_size)
@@ -567,7 +561,6 @@ class DeepFM_Worker(DeepFM_DA):
                 batch_out[i][0] = 0.0
                 if batch_out[i][0] == label_out[i][0]:
                     correct_num += 1
-        print(correct_num, self.batch_size)
         return correct_num
 
 
@@ -596,6 +589,7 @@ if __name__ == "__main__":
     log_record("Begin DA")
     model_master = DeepFM_Master(**dfm_params)
 
+
     master = threading.Thread(target=model_master.apply_grads_loop, name='master').start()
     worker_num = 4
 
@@ -603,6 +597,9 @@ if __name__ == "__main__":
         model_worker = DeepFM_Worker(worker_id=worker_id, **dfm_params)
         model_worker.run()
 
+
+
     for i in range(worker_num):
         threading.Thread(target=setup_worker, args=(i, dfm_params), name='worker{}'.format(i)).start()
 
+    #model_master.apply_grads_loop()
