@@ -64,9 +64,8 @@ class DeepFM(BaseEstimator, TransformerMixin):
     def _init_graph(self):
         self.graph = tf.Graph()
         with self.graph.as_default():
-
             tf.set_random_seed(self.random_seed)
-
+            np.random.seed(self.random_seed)
             self.feat_index = tf.placeholder(tf.int32, shape=[None, None],
                                              name="feat_index")  # None * F
             self.feat_value = tf.placeholder(tf.float32, shape=[None, None],
@@ -156,7 +155,6 @@ class DeepFM(BaseEstimator, TransformerMixin):
             init = tf.global_variables_initializer()
             self.sess = self._init_session()
             self.sess.run(init)
-
             # number of params
             total_parameters = 0
             for variable in self.weights.values():
@@ -177,7 +175,6 @@ class DeepFM(BaseEstimator, TransformerMixin):
 
     def _initialize_weights(self):
         weights = dict()
-
         # embeddings
         weights["feature_embeddings"] = tf.Variable(
             tf.random_normal([self.feature_size, self.embedding_size], 0.0, 0.01),
