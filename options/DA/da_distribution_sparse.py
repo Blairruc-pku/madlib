@@ -119,6 +119,27 @@ class DeepFM_Master(DeepFM_DA):
         self.clear()
         self.register_model()
         self.version = dict()
+        variables = self.graph.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+        self.update_placehoders = list()
+        self.update_ops = list()
+        self.gradient_placehoders = list()
+        gradientL = list()
+        with self.graph.as_default():
+            for i, variable_ in enumerate(variables):
+                placehoder_temp = tf.placeholder(variable_.dtype)
+                self.update_placehoders.append(placehoder_temp)
+                self.update_ops.append(tf.assign(variable_, placehoder_temp, validate_shape=False))
+                if i < 2:
+                    placehoder_value = tf.placeholder(variable_.dtype)
+                    placehoder_indices = tf.placeholder('int64')
+                    self.gradient_placehoders.append(placehoder_value)
+                    self.gradient_placehoders.append(placehoder_indices)
+                    gradientL.append(tf.IndexedSlices(placehoder_value,placehoder_indices))
+                else:
+                    self.gradient_placehoders.append(placehoder_temp)
+                    gradientL.append(placehoder_temp)
+
+            self.apply_grad_op = self.optimizer.apply_gradients(zip(gradientL, variables))
 
     def register_model(self, name='', description=''):
         embed_model_table, dense_model_table, embed_gradient_table, dense_gradient_table =Schema.Embed_Model_Table, Schema.Dense_Model_Table, Schema.Embed_GRADIENT_TABLE, Schema.Dense_GRADIENT_TABLE
@@ -205,11 +226,13 @@ class DeepFM_Master(DeepFM_DA):
         conn.commit()
 
     def update(self, grads, embed_id):
+        t1 = time.time()
         # 分别拉取dense并根据梯度用到的embedding_id拉取对应的embedding
         dense_result = self._fetch_results("SELECT weight, shape FROM {} WHERE model_id ={}".format(Schema.Dense_Model_Table, self.model_id))
         shapes_fetch = eval(dense_result[0][1])
         dense_weights = deserialize_as_nd_weights(dense_result[0][0], shapes_fetch)
-
+        t2 = time.time()
+        log_record("[Master] Pull dense [{} s]".format(round(t2-t1, 2)))
         embedding_result = self._fetch_results("SELECT embedding_weight, embedding_bias, id FROM {} WHERE id in {} and model_id={}".format(Schema.Embed_Model_Table, tuple(embed_id), self.model_id))
         emb_id_mapping = dict()
         embedding, embedding_bias = list(), list()
@@ -219,32 +242,45 @@ class DeepFM_Master(DeepFM_DA):
             embedding_bias.append(deserialize_embedding(row[1]))
             emb_id_mapping[row[2]] = i
             embed_id_.append(row[2])
-
+        t3 = time.time()
+        log_record("[Master] Pull embedding [{} s]".format(round(t3-t2, 2)))
         variables_ = list()
         variables_.append(np.array(embedding))
         variables_.append(np.array(embedding_bias))
         for v in dense_weights:
             variables_.append(v)
 
-        weights = list()
-        for v in variables_:
-            temp = tf.Variable(v)
-            weights.append(temp)
-        init_op = tf.variables_initializer(weights)
+        feed_dict = dict()
+        for i, placeholder in enumerate(self.update_placehoders):
+            feed_dict[placeholder] = variables_[i]
 
+        self.sess.run(self.update_ops, feed_dict=feed_dict)
+
+        feed_dict = dict()
+        placeholder_count = 0
         for i, grad_ in enumerate(grads):
             if isinstance(grad_, IndexedSlicesValue):
                 indices = np.vectorize(emb_id_mapping.get)(grads[i].indices.astype('int64'))
-                grads[i] = tf.IndexedSlices(grads[i].values, indices)
+                feed_dict[self.gradient_placehoders[placeholder_count]] = grads[i].values
+                placeholder_count = placeholder_count + 1
+                feed_dict[self.gradient_placehoders[placeholder_count]] = indices
+                placeholder_count = placeholder_count + 1
+            else:
+                feed_dict[self.gradient_placehoders[placeholder_count]] = grads[i]
+                placeholder_count = placeholder_count + 1
 
-        with tf.Session() as sess:
-            sess.run(init_op)
-            update = self.optimizer.apply_gradients(zip(grads, weights))
-            sess.run(update)
-            weights_updated = [sess.run(v) for v in weights]
+        self.sess.run(self.apply_grad_op, feed_dict=feed_dict)
 
+        variables = self.graph.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+        weights_updated = [self.sess.run(v) for v in variables]
+        t4 = time.time()
+        log_record("[Master] Update weight [{} s]".format(round(t4-t3, 2)))
         self.save_embedding(weights_updated[0:2], embed_id_)
+        t5 = time.time()
+        log_record("[Master] Save embedding  [{} s]".format(round(t5-t4, 2)))
         self.save_dense_weight(weights_updated[2:])
+        t6 = time.time()
+        log_record("[Master] Save dense  [{} s]".format(round(t6-t5, 2)))
         return weights_updated
 
     def apply_grads_loop(self):
@@ -515,7 +551,7 @@ class DeepFM_Worker(DeepFM_DA):
         log_record("[Worker{}] Compute gradient [{} s]".format(self.worker_id, round(t4-t3, 2)))
         self.push_graident(grads)
         t5 = time.time()
-        log_record("[Worker{} Push gradient with version {} [{} s]".format(self.worker_id, self.version-1, round(t5-t4, 2)  ))
+        log_record("[Worker{}] Push gradient with version {} [{} s]".format(self.worker_id, self.version-1, round(t5-t4, 2)  ))
         train_results = self.evaluate_per_batch(Xi_batch_local, Xv_batch, y_batch)
         t6 = time.time()
         log_record("[Worker%d] epoch%d batch%d train_results=%.4f [%.1f s]" % (self.worker_id, epoch,batch_id, float(float(train_results)/float(self.batch_size)), t6-t5))
@@ -584,4 +620,3 @@ if __name__ == "__main__":
 
     for i in range(worker_num):
         threading.Thread(target=setup_worker, args=(i, dfm_params), name='worker{}'.format(i)).start()
-
