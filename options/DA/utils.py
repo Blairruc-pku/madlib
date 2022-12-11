@@ -4,6 +4,7 @@ import numpy as np
 
 from tensorflow.python.framework.ops import IndexedSlicesValue
 import tensorflow as tf
+
 def serialize_gradient(grads):
     typeL, dense_shapeL = list(), list()
     for i in range(len(grads)):
@@ -81,28 +82,13 @@ def deserialize_as_nd_weights(model_weights_serialized, model_shapes):
 
     i, j, model_weights = 0, 0, []
     model_weights_serialized = np.fromstring(model_weights_serialized, dtype=np.float32)
-    total_model_shape = 0
-    for ls in  model_shapes:
-        if ls:
-            total_model_shape += ls[0] * ls[1]
-        else:
-            total_model_shape += 1
-    '''total_model_shape = sum([reduce(lambda x, y: x * y, ls) for ls in model_shapes])'''
+    total_model_shape =  sum([reduce(lambda x, y: x * y, ls if ls else [1]) for ls  in model_shapes])
     total_weights_shape = model_weights_serialized.size
     assert total_model_shape == total_weights_shape, "Number of elements in model weights({0}) doesn't match model({1})." .format(total_weights_shape, total_model_shape)
     while j < len(model_shapes):
-        '''next_pointer = i + reduce(lambda x, y: x * y, model_shapes[j])
+        next_pointer = i + reduce(lambda x, y: x * y, model_shapes[j] if model_shapes[j] else [1])
         weight_arr_portion = model_weights_serialized[i:next_pointer]
-        model_weights.append(np.array(weight_arr_portion).reshape(model_shapes[j]))'''
-        next_pointer = i
-        if model_shapes[j]:
-            next_pointer += model_shapes[j][0] * model_shapes[j][1]
-        else:
-            next_pointer += 1
-        weight_arr_portion = model_weights_serialized[i:next_pointer]
-        if model_shapes[j]:
-            model_weights.append(np.array(weight_arr_portion).reshape(model_shapes[j]))
-        else:
-            model_weights.append(weight_arr_portion.item())
+        model_weights.append(np.array(weight_arr_portion).reshape(model_shapes[j]))
         i, j = next_pointer, j + 1
+
     return model_weights
