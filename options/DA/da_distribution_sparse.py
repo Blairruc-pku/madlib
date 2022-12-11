@@ -21,11 +21,11 @@ sys.path.append('..')
 from OUTDB.DeepFM import DeepFM
 from OUTDB import config
 from OUTDB.metrics import accuracy
-from OUTDB import metrics
 
 
-#logfile = os.path.join('../logs', 'da_' + str(int(time.time())) + '.res')
-logfile = './log.res'
+
+logfile = os.path.join('../logs', 'da_' + str(int(time.time())) + '.res')
+
 
 def log_record(content, ifprint = True):
     with open(logfile, 'a') as f:
@@ -470,17 +470,30 @@ class DeepFM_Worker(DeepFM_DA):
 
 
     def gradient_transform(self, grads, emb_id_mapping):
+        def sum_by_group(values, groups):
+            order = np.argsort(groups)
+            groups = groups[order]
+            values = values[order]
+            values.cumsum(axis=0,out=values)
+            index = np.ones(len(groups), 'bool')
+            index[:-1] = groups[1:] != groups[:-1]
+            values = values[index]
+            groups = groups[index]
+            values[1:] = values[1:] - values[:-1]
+            return values, groups
+
         inv_map = {v: k for k, v in emb_id_mapping.iteritems()}
         for i in  range(len(grads)):
             grad = grads[i]
             if isinstance(grad, IndexedSlicesValue):
                 indices = np.vectorize(inv_map.get)(grad.indices)
-                grad = IndexedSlicesValue(values=grad.values, indices=indices, dense_shape=grad.dense_shape)
+                values, indices = sum_by_group(grad.values, indices)
+                grad = IndexedSlicesValue(values=values, indices=indices, dense_shape=grad.dense_shape)
                 grads[i] = grad
 
         return  grads
 
-    def run_one_batch(self, batch_id):
+    def run_one_batch(self, batch_id, epoch):
         Xi_batch, Xv_batch, y_batch = self.get_batch_data_block( self.batch_size, batch_id)
         t1 = time.time()
         emd_id_unique = np.unique(np.array(Xi_batch))
@@ -490,7 +503,7 @@ class DeepFM_Worker(DeepFM_DA):
         grads = self.gradient_transform(grads, emb_id_mapping)
         self.push_graident(grads)
         train_results = self.evaluate_per_batch(Xi_batch_local, Xv_batch, y_batch)
-        log_record("[Worker%d] batch%d train_results=%.4f [%.1f s]" % (self.worker_id, batch_id, float(float(train_results)/float(self.batch_size)), time.time() - t1))
+        log_record("[Worker%d] epoch%d batch%d train_results=%.4f [%.1f s]" % (self.worker_id, epoch,batch_id, float(float(train_results)/float(self.batch_size)), time.time() - t1))
 
     def run(self):
         total_batch = int(self.total_sample_worker / self.batch_size)
@@ -498,7 +511,7 @@ class DeepFM_Worker(DeepFM_DA):
         for epoch in range(self.epoch):
             log_record("[Worker{self.worker_id}] Enter epoch {epoch}".format(**locals()))
             for i in range(total_batch):
-                self.run_one_batch(i)
+                self.run_one_batch(i, epoch)
 
     def evaluate_per_batch(self, Xi, Xv, y):
         feed_dict = {self.feat_index: Xi,
