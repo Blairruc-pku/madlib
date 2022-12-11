@@ -248,23 +248,22 @@ class DeepFM_Master(DeepFM_DA):
         return weights_updated
 
     def apply_grads_loop(self):
+        t1 = time.time()
         while True:
-            self.apply_grads()
+            embed_gradient_table, dense_gradient_table = Schema.Embed_GRADIENT_TABLE, Schema.Dense_GRADIENT_TABLE
+            embed_query = '''SELECT worker_id, version FROM {dense_gradient_table} WHERE model_id={self.model_id}'''.format(**locals())
+            embed_results = self._fetch_results(embed_query)
+            if embed_results:
+                log_record("[Master] Wait for gradient [{} s]".format(round(time.time() - t1, 2)))
+                for row in embed_results:
+                    worker_id, version = row
+                    if not worker_id in self.version.keys():
+                        self.version[worker_id] = 0
+                    if version == self.version[worker_id]:
+                        self.apply_grads_per_worker(worker_id)
+                t1 = time.time()
 
-    def apply_grads(self):
-        embed_gradient_table, dense_gradient_table = Schema.Embed_GRADIENT_TABLE, Schema.Dense_GRADIENT_TABLE
-        embed_query = '''SELECT worker_id, version FROM {dense_gradient_table} WHERE model_id={self.model_id}'''.format(**locals())
-        embed_results = self._fetch_results(embed_query)
-        if embed_results:
-            for row in embed_results:
-                worker_id, version = row
-                if not worker_id in self.version.keys():
-                    self.version[worker_id] = 0
-                if version == self.version[worker_id]:
-                    self.apply_grads_per_worker(worker_id)
-
-
-    def apply_grads_per_worker(self, worker_id):
+    def pull_grads(self, worker_id):
         embed_gradient_table, dense_gradient_table = Schema.Embed_GRADIENT_TABLE, Schema.Dense_GRADIENT_TABLE
         version = self.version[worker_id]
         query = '''SELECT gradient, shape, auxiliaries FROM {dense_gradient_table} WHERE model_id={self.model_id} AND version={version} AND worker_id={worker_id}'''.format(**locals())
@@ -288,13 +287,23 @@ class DeepFM_Master(DeepFM_DA):
             grads.append(d)
 
         embed_id_unique = np.unique(np.array(embed_id)).tolist()
+
+        return  grads, embed_id_unique
+
+    def apply_grads_per_worker(self, worker_id):
+        t1 = time.time()
+        grads, embed_id_unique = self.pull_grads(worker_id)
+        t2 = time.time()
+        log_record("[Mater] Pull gradient  [{} s]".format(round(t2 - t1,2)))
         self.update(grads, embed_id_unique)
+        t3 = time.time()
+        log_record("[Mater] Update weight [{} s]".format(round(t3 - t2,2)))
         self.version[worker_id] = self.version[worker_id] + 1
-
-        query = "UPDATE {} SET model_version={} WHERE model_id={} AND worker_id={}".format(dense_gradient_table, self.version[worker_id], self.model_id,worker_id)
+        query = "UPDATE {} SET model_version={} WHERE model_id={} AND worker_id={}".format(Schema.Dense_GRADIENT_TABLE, self.version[worker_id], self.model_id,worker_id)
         self._execute(query)
+        t4 = time.time()
         log_record("[Master] [Worker{}] Save model with version {}".format(worker_id, self.version[worker_id]))
-
+        log_record("[Mater] Deal with worker {} takes {} sec ".format(worker_id, round(t4 - t1,2)))
 
 class DeepFM_Worker(DeepFM_DA):
     def __init__(self, worker_id, **kwargs):
@@ -327,11 +336,10 @@ class DeepFM_Worker(DeepFM_DA):
         # 根据embedding_id进行拉取对应的embedding
         sql_check_version = "SELECT model_version FROM {} WHERE worker_id={} AND model_id={} ".format(Schema.Dense_GRADIENT_TABLE, self.worker_id,self.model_id)
         dense_result = self._fetch_results(sql_check_version)
+        t1 = time.time()
         while not (self.init_weight or (dense_result[0][0]==self.version)):
              dense_result = self._fetch_results(sql_check_version)
-        if not self.init_weight:
-            log_record("[Worker{}] Pull weight with version {}".format(self.worker_id, self.version))
-
+        log_record("[Worker{}] Wait for master [{} s]".format(self.worker_id, round(time.time() - t1, 2)))
         if self.init_weight:
             self.init_weight = False
         variables_ = list()
@@ -464,8 +472,6 @@ class DeepFM_Worker(DeepFM_DA):
             cursor.execute(sql_update, (p2.Binary(grads_serialized), str(shapes), str(auxiliaries)))
             conn.commit()
 
-
-        log_record("[Worker{self.worker_id}] Push gradient with version {self.version}".format(**locals()))
         self.version = self.version + 1
 
 
@@ -494,16 +500,26 @@ class DeepFM_Worker(DeepFM_DA):
         return  grads
 
     def run_one_batch(self, batch_id, epoch):
-        Xi_batch, Xv_batch, y_batch = self.get_batch_data_block( self.batch_size, batch_id)
         t1 = time.time()
+        Xi_batch, Xv_batch, y_batch = self.get_batch_data_block( self.batch_size, batch_id)
+        t2 = time.time()
+        log_record("[Worker{}] Get batch data  [{} s]".format(self.worker_id, round(t2-t1, 2)))
         emd_id_unique = np.unique(np.array(Xi_batch))
         emb_id_mapping = self.pull_weights(emd_id_unique)
+        t3 = time.time()
+        log_record("[Worker{}] Pull weight with version {} [{} s]".format(self.worker_id, self.version, round(t3-t2, 2)))
         Xi_batch_local = np.vectorize(emb_id_mapping.get)(Xi_batch)
         grads = self.gradients_compute( Xi_batch_local, Xv_batch, y_batch)
         grads = self.gradient_transform(grads, emb_id_mapping)
+        t4 = time.time()
+        log_record("[Worker{}] Compute gradient [{} s]".format(self.worker_id, round(t4-t3, 2)))
         self.push_graident(grads)
+        t5 = time.time()
+        log_record("[Worker{} Push gradient with version {} [{} s]".format(self.worker_id, self.version-1, round(t5-t4, 2)  ))
         train_results = self.evaluate_per_batch(Xi_batch_local, Xv_batch, y_batch)
-        log_record("[Worker%d] epoch%d batch%d train_results=%.4f [%.1f s]" % (self.worker_id, epoch,batch_id, float(float(train_results)/float(self.batch_size)), time.time() - t1))
+        t6 = time.time()
+        log_record("[Worker%d] epoch%d batch%d train_results=%.4f [%.1f s]" % (self.worker_id, epoch,batch_id, float(float(train_results)/float(self.batch_size)), t6-t5))
+        log_record("[Worker{}] Time for one batch [{} s]".format(self.worker_id, round(t6-t1, 2)  ))
 
     def run(self):
         total_batch = int(self.total_sample_worker / self.batch_size)
