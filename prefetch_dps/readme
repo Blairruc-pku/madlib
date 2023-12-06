@@ -2,3 +2,7 @@ add tf_utils.py
 add madlib_keras.py
 add vggnet.py
 add DeepFM.py
+
+file path: /madlib/Versions/1.19.0/port/greenplum/6/modules/deep_learning/
+
+train function in madlib_keras.py : def control_start
