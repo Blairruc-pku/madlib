@@ -3072,66 +3072,98 @@ GROUP BY c.relname;'''
 
 def get_seg_id(e_id,**kwargs):
     dist_id = e_id % 6
-    if dist_id = 0:
+    if dist_id == 0:
         target_seg = 1
-    elif dist_id = 1:
+    elif dist_id == 1:
         target_seg = 4
-    elif dist_id = 2:
+    elif dist_id == 2:
         target_seg = 3
-    elif dist_id = 3:
+    elif dist_id == 3:
         target_seg = 0
-    elif dist_id = 4:
+    elif dist_id == 4:
         target_seg = 5
     else:
         target_seg = 2
     return target_seg
 
 def get_block_into_dbcache(id_list,**kwargs):
+    t0 = time.time()
     ip_list = ['172.17.31.86','172.17.31.91','172.17.31.85','172.17.31.92','172.17.31.90','172.17.31.88']
-    sql = "select block_number from embed_model where id in {} order by id".format(id_list)
+    sql = "select id,block_number from block_hash where id in {}".format(tuple(id_list))
     seg_ip = '172.17.31.87'
     port = 5432
     user = 'gpadmin'
     db = 'gpadmin'
-    vistited_block = dict()
     conn = p2.connect(host=seg_ip, user=user, dbname=db, port=port)
     cursor = conn.cursor()
     cursor.execute(sql)
     res = cursor.fetchall()
+    record("prewarm with block at {}\n".format(time.time() - t0))
     conn.commit()
     cnt = 0
+    blk0 = dict()
+    blk1 = dict()
+    blk2 = dict()
+    blk3 = dict()
+    blk4 = dict()
+    blk5 = dict()
+    for e_id,data in res:
+        target_seg = get_seg_id(e_id)
+        if target_seg == 0:
+            blk0[data] = 1
+        elif target_seg == 1:
+            blk1[data] = 1
+        elif target_seg == 2:
+            blk2[data] = 1
+        elif target_seg == 3:
+            blk3[data] = 1
+        elif target_seg == 4:
+            blk4[data] = 1
+        elif target_seg == 5:
+            blk5[data] = 1
+    record("block done , start prewarm at {}\n".format(time.time() - t0))
+    sql0 = "select pg_prewarm_blocks('embed_model','buffer','main',ARRAY{})".format(list(blk0.keys()))
     conn0 = p2.connect(host=ip_list[0], user=user, dbname=db, port=6000, options='-c gp_session_role=utility')
     cursor0 = conn0.cursor()
+    cursor0.execute(sql0)
+    res = cursor0.fetchall()
+    record("seg 0 prewarm {} in {} at {}\n".format(res,len(list(blk0.keys())),time.time() - t0))
+    conn0.commit()
+    sql1 = "select pg_prewarm_blocks('embed_model','buffer','main',ARRAY{})".format(list(blk1.keys()))
     conn1 = p2.connect(host=ip_list[1], user=user, dbname=db, port=6000, options='-c gp_session_role=utility')
     cursor1 = conn1.cursor()
+    cursor1.execute(sql1)
+    res = cursor1.fetchall()
+    record("seg 1 prewarm {} in {} at {}\n".format(res,len(list(blk1.keys())),time.time() - t0))
+    conn1.commit()
+    sql2 = "select pg_prewarm_blocks('embed_model','buffer','main',ARRAY{})".format(list(blk2.keys()))
     conn2 = p2.connect(host=ip_list[2], user=user, dbname=db, port=6000, options='-c gp_session_role=utility')
     cursor2 = conn2.cursor()
+    cursor2.execute(sql2)
+    res = cursor2.fetchall()
+    record("seg 2 prewarm {} in {} at {}\n".format(res,len(list(blk2.keys())),time.time() - t0))
+    conn2.commit()
+    sql3 = "select pg_prewarm_blocks('embed_model','buffer','main',ARRAY{})".format(list(blk3.keys()))
     conn3 = p2.connect(host=ip_list[3], user=user, dbname=db, port=6000, options='-c gp_session_role=utility')
     cursor3 = conn3.cursor()
+    cursor3.execute(sql3)
+    res = cursor3.fetchall()
+    record("seg 3 prewarm {} in {} at {}\n".format(res,len(list(blk3.keys())),time.time() - t0))
+    conn3.commit()
+    sql4 = "select pg_prewarm_blocks('embed_model','buffer','main',ARRAY{})".format(list(blk4.keys()))
     conn4 = p2.connect(host=ip_list[4], user=user, dbname=db, port=6000, options='-c gp_session_role=utility')
     cursor4 = conn4.cursor()
+    cursor4.execute(sql4)
+    res = cursor4.fetchall()
+    record("seg 4 prewarm {} in {} at {}\n".format(res,len(list(blk4.keys())),time.time() - t0))
+    conn4.commit()
+    sql5 = "select pg_prewarm_blocks('embed_model','buffer','main',ARRAY{})".format(list(blk5.keys()))
     conn5 = p2.connect(host=ip_list[5], user=user, dbname=db, port=6000, options='-c gp_session_role=utility')
     cursor5 = conn5.cursor()
-    for data in res:
-        if not vistited_block[data]:
-            vistited_block[data] = 1
-        else:
-            sql = "select pg_prewarm('embed_model','buffer','main',{},1)".format(data)
-            target_seg = get_seg_id(id_list[cnt])
-            if target_seg = 0:
-                cursor0.execute(sql)
-            elif target_seg = 1:
-                cursor1.execute(sql)
-            elif target_seg = 2:
-                cursor2.execute(sql)
-            elif target_seg = 3:
-                cursor3.execute(sql)
-            elif target_seg = 4:
-                cursor4.execute(sql)
-            elif target_seg = 5:
-                cursor5.execute(sql)
-        cnt = cnt + 1
-    
+    cursor5.execute(sql5)
+    res = cursor5.fetchall()
+    record("seg 5 prewarm {} in {} at {}\n".format(res,len(list(blk5.keys())),time.time() - t0))
+    conn5.commit()
 
 def buffer_clear(source_table_name, **kwargs):
     seg_ip = '127.0.0.1'
@@ -3187,7 +3219,7 @@ def batch_compute_gradient_prefetch(current_seg_id, batch_num, average_iter, sou
                 model_worker.model_id = model_worker.model_id + 1
         model_worker.push_dense_weights()'''
     # buffer level train:
-    prefetch_D = 1
+    prefetch_D = 5
     flag = 0
     batch_list = list()
     sql = "select buffer_id from {source_table} where gp_segment_id = {current_seg_id}".format(**locals())
@@ -3204,80 +3236,105 @@ def batch_compute_gradient_prefetch(current_seg_id, batch_num, average_iter, sou
             if buffer_index != 0:
                 model_worker.version = model_worker.version + 1
                 model_worker.model_id = model_worker.model_id + 1
-        #batch_temp = tuple(batch_list[buffer_index:buffer_index + prefetch_D])
-        batch_temp = batch_list[buffer_index]
-        buffer_index =buffer_index + prefetch_D
-        select_query = '''SELECT xi,xv,y,xi_shape,xv_shape,y_shape
+        batch_temp = tuple(batch_list[buffer_index:buffer_index + prefetch_D])
+        #x% DPS
+        feature_id_query = '''SELECT xi,xi_shape
                             FROM {source_table}
-                            where gp_segment_id = {current_seg_id} and {source_table}.buffer_id = {batch_temp}'''.format(**locals())
-        data = model_worker._fetch_results_onseg(select_query)
-        buffer_clear(source_table_name)
-        record("data fetch time at {}\n".format(time.time() - t1))
+                            where gp_segment_id = {current_seg_id} and {source_table}.buffer_id in {batch_temp}'''.format(**locals())
+        data = model_worker._fetch_results_onseg(feature_id_query)
         xi = list()
-        xv = list()
-        y = list()
         xi_shape = list()
-        xv_shape = list()
-        target_shape = list()
         for i, row in enumerate(data):
             xi.append(row[0])
-            xv.append(row[1])
-            y.append(row[2])
-            xi_shape.append(row[3])
-            xv_shape.append(row[4])
-            target_shape.append(row[5])
+            xi_shape.append(row[1])
         xi_train = list()
-        xv_train = list()
-        y_train = list()
         for i in range(prefetch_D):
             xi_train.append(np_array_float32(xi[i],xi_shape[i]))
-            xv_train.append(np_array_float32(xv[i],xv_shape[i]))
-            y_train.append(np_array_int16(y[i],target_shape[i]))
         xi_train = np.concatenate((xi_train),axis = 0)
-        xv_train = np.concatenate((xv_train),axis = 0)
-        y_train = np.concatenate((y_train),axis = 0)
         xi_tmp = xi_train.T
-        xv_tmp = xv_train.T
         xi = [np.array(xi_tmp[i, :]) for i in range(xi_tmp.shape[0])]
-        xv = [np.array(xv_tmp[i, :]) for i in range(xv_tmp.shape[0])]
-        record("data prepare time {}\n".format(time.time() - t1))
-        emd_id_unique = np.unique(np.array(xi,dtype=np.int32))
-        #model_worker.key_time_check(hash_time)
-        #embed_id_mapping = model_worker.pull_new_key(emd_id_unique)
-        #buffer_preload('embed_model',block_all)
-        #get_block_into_dbcache(emd_id_unique)
-        embed_id_mapping = model_worker.pull_embedding_weights(emd_id_unique)
-        Xi_batch_local = np.vectorize(embed_id_mapping.get)(xi)
-        record("seg {} prepare last {}\n".format(current_seg_id, round(time.time() - t1,2)))
-        '''t2 = time.time()
-        Xi_train = Xi_batch_local.T
-        Xv_train = np.array(xv).T
-        Y_train = list()
-        for y in y_train:
-            Y_train.append(y[0])
-        Y_train = np.array(Y_train).reshape(-1,1)
-        del y_train
-        del xi_train
-        del xv_train
-        return_grads = 1
-        grads = model_worker.gradients_compute(Xi_train, Xv_train, Y_train, return_grads)
-        grads = model_worker.gradient_transform(grads,embed_id_mapping)
-        record("seg {} train model last {} with {}\n".format(current_seg_id, round(time.time() - t1,2),len(grads)))
-        if return_grads:
-            res = model_worker.evaluate_per_batch(Xi_train, Xv_train, Y_train)
-            record("seg {} evluate at batch {} with res {}\n".format(current_seg_id, buffer_index, res))
-            del Xi_train
-            del Xv_train
-            del Y_train
-            model_worker.push_embedding_grads_dps(0,grads[0:2])
-            record("seg {} push_embedding_grads at {}\n".format(current_seg_id, round(time.time()-t1,2)))
-            #flattened_dense_grads = model_worker.update_dense(grads[2:])
+        embed_id_unique = np.unique(np.array(xi,dtype=np.int32))
+        '''end_id = int(0.35*(len(embed_id_unique)))
+        record("end_id = {}\n".format(end_id))
+        embedding_id_prefetch = embed_id_unique[0:end_id]
+        model_worker.hot_id = embedding_id_prefetch
+        model_worker.hot_key_init()'''
+        #100%prefetch
+        embed_id_mapping = model_worker.pull_embedding_weights(embed_id_unique)
+        #batch_temp = batch_list[buffer_index]
+        for buffer_id in batch_temp:
+            select_query = '''SELECT xi,xv,y,xi_shape,xv_shape,y_shape
+                                FROM {source_table}
+                                where gp_segment_id = {current_seg_id} and {source_table}.buffer_id = {buffer_id}'''.format(**locals())
+            data = model_worker._fetch_results_onseg(select_query)
+            buffer_clear(source_table_name)
+            record("data fetch time at {}\n".format(time.time() - t1))
+            xi = list()
+            xv = list()
+            y = list()
+            xi_shape = list()
+            xv_shape = list()
+            target_shape = list()
+            for i, row in enumerate(data):
+                xi.append(row[0])
+                xv.append(row[1])
+                y.append(row[2])
+                xi_shape.append(row[3])
+                xv_shape.append(row[4])
+                target_shape.append(row[5])
+            xi_train = list()
+            xv_train = list()
+            y_train = list()
+            for i in range(1):
+                xi_train.append(np_array_float32(xi[i],xi_shape[i]))
+                xv_train.append(np_array_float32(xv[i],xv_shape[i]))
+                y_train.append(np_array_int16(y[i],target_shape[i]))
+            xi_train = np.concatenate((xi_train),axis = 0)
+            xv_train = np.concatenate((xv_train),axis = 0)
+            y_train = np.concatenate((y_train),axis = 0)
+            xi_tmp = xi_train.T
+            xv_tmp = xv_train.T
+            xi = [np.array(xi_tmp[i, :]) for i in range(xi_tmp.shape[0])]
+            xv = [np.array(xv_tmp[i, :]) for i in range(xv_tmp.shape[0])]
+            record("data prepare time {}\n".format(time.time() - t1))
+            emd_id_unique = np.unique(np.array(xi,dtype=np.int32))
+            #model_worker.key_time_check(hash_time)
+            #embed_id_mapping = model_worker.pull_new_key(emd_id_unique)
+            #buffer_preload('embed_model',block_all)
+            #get_block_into_dbcache(emd_id_unique)
+            record("parameter prefetch at {}\n".format(time.time() - t1))
+            #embed_id_mapping = model_worker.hot_key_update(emd_id_unique)
+            Xi_batch_local = np.vectorize(embed_id_mapping.get)(xi)
+            record("seg {} prepare last {}\n".format(current_seg_id, round(time.time() - t1,2)))
+            t2 = time.time()
+            Xi_train = Xi_batch_local.T
+            Xv_train = np.array(xv).T
+            Y_train = list()
+            for y in y_train:
+                Y_train.append(y[0])
+            Y_train = np.array(Y_train).reshape(-1,1)
+            del y_train
+            del xi_train
+            del xv_train
+            return_grads = 1
+            grads = model_worker.gradients_compute(Xi_train, Xv_train, Y_train, return_grads)
+            grads = model_worker.gradient_transform(grads,embed_id_mapping)
+            record("seg {} train model last {} with {}\n".format(current_seg_id, round(time.time() - t1,2),len(grads)))
+            if return_grads:
+                res = model_worker.evaluate_per_batch(Xi_train, Xv_train, Y_train)
+                record("seg {} evluate at batch {} with res {}\n".format(current_seg_id, buffer_index, res))
+                del Xi_train
+                del Xv_train
+                del Y_train
+                model_worker.push_embedding_grads_dps(0,grads[0:2])
+                record("seg {} push_embedding_grads at {}\n".format(current_seg_id, round(time.time()-t1,2)))
+                #flattened_dense_grads = model_worker.update_dense(grads[2:])
         if buffer_index % avg_time == 0 or buffer_index >= batch_num-1:
             model_worker.push_dense_weights()
             flag = 1
         else:
             model_worker.version = model_worker.version + prefetch_D
-            model_worker.model_id = model_worker.model_id + prefetch_D'''
+            model_worker.model_id = model_worker.model_id + prefetch_D
  
 def dense_model_average(gpseg_list, average_iter, **kwargs):
     record("thread start dense_model_average\n")
